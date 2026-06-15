@@ -331,12 +331,12 @@ def _inject_brand_css(st) -> None:
 
 
 def _sidebar_brand(st) -> None:
-    """City of Mitcham wordmark at the top of the sidebar (crest removed)."""
+    """Wordmark at the top of the sidebar (council branding removed)."""
     st.markdown(
         """
         <div class="sb-brand">
           <div>
-            <div class="nm">City of Mitcham</div>
+            <div class="nm">Buildings Renewal Outlook</div>
             <div class="sub">ASSET MANAGEMENT</div>
           </div>
         </div>
