@@ -31,7 +31,7 @@ REPO_DB = ROOT / "data" / "lga_amp.duckdb"
 # Must be the first Streamlit call. render_dashboard() calls it again, so we
 # no-op it just before handing off (see bottom of file).
 st.set_page_config(
-    page_title="City of Mitcham — Buildings Renewal Outlook",
+    page_title="Buildings Renewal Outlook",
     page_icon="🏛",
     layout="wide",
 )
@@ -53,7 +53,7 @@ def _check_password() -> None:
     if st.session_state.get("_authed"):
         return
 
-    st.markdown("## City of Mitcham — Buildings Renewal Outlook")
+    st.markdown("## Buildings Renewal Outlook")
     st.caption("Prepared by Social Capital Advisory. Please enter the access password.")
     pw = st.text_input(
         "Password", type="password", label_visibility="collapsed",
@@ -100,7 +100,7 @@ _check_password()
 
 db = _resolve_db()
 if db is None:
-    st.title("City of Mitcham — Buildings Renewal Outlook")
+    st.title("Buildings Renewal Outlook")
     st.error(
         "No demonstration database found. Provide one of:\n\n"
         "- a built `data/lga_amp.duckdb` — run `python scripts/build_demo_db.py`, or\n"

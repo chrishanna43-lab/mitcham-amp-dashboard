@@ -1835,7 +1835,7 @@ def _render_streamlit(
     pio.templates.default = "mitcham"
 
     st.set_page_config(
-        page_title="City of Mitcham — Buildings Renewal Outlook", page_icon="🏛", layout="wide"
+        page_title="Buildings Renewal Outlook", page_icon="🏛", layout="wide"
     )
     _inject_brand_css(st)
 
