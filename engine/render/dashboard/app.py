@@ -331,19 +331,10 @@ def _inject_brand_css(st) -> None:
 
 
 def _sidebar_brand(st) -> None:
-    """City of Mitcham crest + wordmark at the top of the sidebar."""
-    import base64
-
-    lockup = Path(__file__).parent / "assets" / "mitcham-lockup.png"
-    try:
-        b64 = base64.b64encode(lockup.read_bytes()).decode("ascii")
-        img = f'<img src="data:image/png;base64,{b64}" alt="City of Mitcham"/>'
-    except OSError:
-        img = ""
+    """City of Mitcham wordmark at the top of the sidebar (crest removed)."""
     st.markdown(
-        f"""
+        """
         <div class="sb-brand">
-          {img}
           <div>
             <div class="nm">City of Mitcham</div>
             <div class="sub">ASSET MANAGEMENT</div>
