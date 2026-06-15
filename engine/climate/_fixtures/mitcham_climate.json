@@ -1,0 +1,23 @@
+{
+  "region": "city-of-mitcham",
+  "baseline_year": 2024,
+  "endpoint_year": 2100,
+  "scenarios": {
+    "no_climate": {
+      "heat":     {"baseline": 0.0, "endpoint": 0.0},
+      "flood":    {"baseline": 0.0, "endpoint": 0.0},
+      "bushfire": {"baseline": 0.0, "endpoint": 0.0}
+    },
+    "rcp45": {
+      "heat":     {"baseline": 0.30, "endpoint": 0.85},
+      "flood":    {"baseline": 0.20, "endpoint": 0.55},
+      "bushfire": {"baseline": 0.40, "endpoint": 0.78}
+    },
+    "rcp85": {
+      "heat":     {"baseline": 0.32, "endpoint": 1.40},
+      "flood":    {"baseline": 0.22, "endpoint": 0.90},
+      "bushfire": {"baseline": 0.42, "endpoint": 1.20}
+    }
+  },
+  "notes": "intensity is a normalised 0..1+ index. 1.0 approx a doubling of historical risk. Linear in time between baseline and endpoint. Representative of NARCliM/CSIRO CCIA/BoM ranges for the Mitcham region; replace with site-specific pulls when integrating."
+}

@@ -1,0 +1,14 @@
+# The dashboard injects its own City of Mitcham CSS; this theme only styles
+# Streamlit's own chrome (widgets, spinner, sidebar) to match.
+[theme]
+primaryColor = "#097556"
+backgroundColor = "#f5f7f4"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#17231a"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

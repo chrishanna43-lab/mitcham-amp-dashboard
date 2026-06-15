@@ -1,0 +1,19 @@
+# Runtime dependencies for the Mitcham AMP demonstration dashboard.
+# Mirrors the engine's pyproject.toml, EXCEPT `mosek` is deliberately omitted:
+# MOSEK is a commercial, licensed solver and is not available on free hosts.
+# The optimiser (engine/optimise/stochastic.py::_solve) automatically falls
+# back to the open-source HiGHS solver — bundled with cvxpy — whenever MOSEK is
+# not installed, so the live re-solve panels work without a licence (just slower).
+
+duckdb>=1.0
+numpy>=1.26
+pandas>=2.2
+pydantic>=2.6
+linopy>=0.3
+highspy>=1.7
+typer>=0.12
+jinja2>=3.1
+streamlit>=1.32
+plotly>=5.20
+scipy>=1.13
+cvxpy>=1.9

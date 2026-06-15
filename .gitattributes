@@ -1,0 +1,6 @@
+# If you choose to commit a (slimmed) demo database to the repo, track it with
+# Git LFS so the repo stays clone-able. Requires `git lfs install` first.
+# Note GitHub's 100 MB hard limit per non-LFS file; the full demo DB is ~500 MB,
+# so build a smaller one (e.g. `python scripts/build_demo_db.py --n 80`) or host
+# it externally and use LGA_AMP_DB_URL instead.
+*.duckdb filter=lfs diff=lfs merge=lfs -text

@@ -1,0 +1,307 @@
+/* City of Mitcham — Buildings Renewal Outlook
+   Brand tokens + A4 print model. Inlined into the report via <style>. */
+
+:root {
+  --mitcham-green: #01310c;
+  --bright-green: #097556;
+  --gold: #fbec30;
+  --charcoal: #1c2316;
+  --cream: #f7f5f0;
+  --rule: rgba(251, 236, 48, 0.85);
+  --hairline: #d8d3c6;
+  --serif: "Cormorant Garamond", Georgia, "Times New Roman", serif;
+  --sans: "Inter", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+body {
+  margin: 0;
+  background: #555;
+  color: var(--charcoal);
+  font-family: var(--sans);
+  font-size: 11.5pt;
+  line-height: 1.55;
+}
+
+/* --- A4 page model ------------------------------------------------------- */
+.page {
+  position: relative;
+  width: 210mm;
+  min-height: 297mm;
+  margin: 8mm auto;
+  padding: 22mm 20mm;
+  background: #ffffff;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.page--cover {
+  padding: 0;
+  background: var(--mitcham-green);
+  color: var(--cream);
+}
+
+@media print {
+  body { background: #ffffff; }
+  .page {
+    margin: 0;
+    box-shadow: none;
+    page-break-after: always;
+  }
+  .page:last-child { page-break-after: auto; }
+}
+
+/* --- Cover ---------------------------------------------------------------- */
+.cover-inner {
+  position: relative;
+  width: 100%;
+  min-height: 297mm;
+  padding: 30mm 22mm;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.cover-motto {
+  background: var(--gold);
+  color: var(--mitcham-green);
+  display: inline-block;
+  align-self: flex-start;
+  padding: 8px 18px;
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: 16pt;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+}
+
+.cover-motto small {
+  display: block;
+  font-family: var(--sans);
+  font-weight: 500;
+  font-size: 8.5pt;
+  letter-spacing: 0.06em;
+  text-transform: none;
+  margin-top: 4px;
+  color: var(--mitcham-green);
+}
+
+.cover-title {
+  font-family: var(--serif);
+  font-size: 46pt;
+  line-height: 1.04;
+  font-weight: 600;
+  color: #ffffff;
+  margin: 0;
+}
+
+.cover-title .accent { color: var(--gold); }
+
+.cover-sub {
+  font-size: 13pt;
+  color: #cfe0d3;
+  margin-top: 14px;
+  border-top: 2px solid var(--rule);
+  padding-top: 14px;
+  max-width: 120mm;
+}
+
+.cover-meta {
+  font-size: 10.5pt;
+  color: #b8ccbc;
+  letter-spacing: 0.02em;
+}
+
+.cover-meta strong { color: #ffffff; font-weight: 600; }
+
+/* --- Headings ------------------------------------------------------------- */
+.eyebrow {
+  color: var(--bright-green);
+  font-size: 8.5pt;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  margin: 0 0 6px 0;
+}
+
+h1.section {
+  font-family: var(--serif);
+  font-size: 27pt;
+  font-weight: 600;
+  color: var(--mitcham-green);
+  margin: 0 0 4px 0;
+  line-height: 1.08;
+}
+
+h1.section::after {
+  content: "";
+  display: block;
+  width: 64px;
+  height: 4px;
+  background: var(--gold);
+  margin-top: 10px;
+}
+
+h2.sub {
+  font-family: var(--serif);
+  font-size: 15pt;
+  font-weight: 600;
+  color: var(--bright-green);
+  margin: 22px 0 6px 0;
+}
+
+p { margin: 0 0 11px 0; }
+
+.lede {
+  font-family: var(--serif);
+  font-size: 14.5pt;
+  line-height: 1.5;
+  color: var(--charcoal);
+}
+
+.motto-inline { color: var(--bright-green); font-style: italic; }
+
+/* --- Headline numbers ----------------------------------------------------- */
+.headline {
+  background: var(--mitcham-green);
+  color: #ffffff;
+  border-left: 8px solid var(--gold);
+  padding: 22px 26px;
+  margin: 18px 0 24px 0;
+}
+
+.headline .label {
+  font-size: 9.5pt;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin: 0 0 6px 0;
+}
+
+.headline .figure {
+  font-family: var(--serif);
+  font-size: 44pt;
+  font-weight: 700;
+  line-height: 1;
+  margin: 0;
+}
+
+.headline .band {
+  font-size: 10.5pt;
+  color: #cfe0d3;
+  margin: 10px 0 0 0;
+}
+
+.metric-grid {
+  display: flex;
+  gap: 14px;
+  margin: 0 0 22px 0;
+}
+
+.metric {
+  flex: 1;
+  background: var(--cream);
+  border: 1px solid var(--hairline);
+  border-top: 4px solid var(--bright-green);
+  padding: 16px 18px;
+}
+
+.metric .label {
+  font-size: 8.5pt;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--bright-green);
+  margin: 0 0 6px 0;
+  font-weight: 700;
+}
+
+.metric .value {
+  font-family: var(--serif);
+  font-size: 24pt;
+  font-weight: 600;
+  color: var(--mitcham-green);
+  margin: 0;
+}
+
+/* --- Works programme table ----------------------------------------------- */
+table.works {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 9.5pt;
+  margin-top: 8px;
+}
+
+table.works thead th {
+  background: var(--mitcham-green);
+  color: #ffffff;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 8.5pt;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+table.works tbody td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+table.works tbody tr:nth-child(even) { background: var(--cream); }
+
+table.works tbody tr.robust {
+  background: rgba(251, 236, 48, 0.28);
+}
+
+table.works tbody tr.robust td { font-weight: 600; }
+
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.flag {
+  display: inline-block;
+  font-size: 8pt;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: var(--gold);
+  color: var(--mitcham-green);
+}
+
+.flag.no { background: #e7e3d8; color: #6b6a5e; }
+
+.legend { font-size: 9pt; color: #6b6a5e; margin-top: 10px; }
+
+/* --- Method & caveats ----------------------------------------------------- */
+ul.method { margin: 6px 0 14px 0; padding-left: 20px; }
+ul.method li { margin-bottom: 7px; }
+
+.callout {
+  background: var(--cream);
+  border-left: 6px solid var(--bright-green);
+  padding: 14px 18px;
+  font-size: 10.5pt;
+  margin: 16px 0;
+}
+
+.callout strong { color: var(--mitcham-green); }
+
+/* --- Footer -------------------------------------------------------------- */
+.footer {
+  position: absolute;
+  bottom: 12mm;
+  left: 20mm;
+  right: 20mm;
+  border-top: 1px solid var(--hairline);
+  padding-top: 7px;
+  font-size: 8pt;
+  color: #8a897d;
+  display: flex;
+  justify-content: space-between;
+  letter-spacing: 0.04em;
+}
+
+.footer .motto { color: var(--bright-green); font-style: italic; }

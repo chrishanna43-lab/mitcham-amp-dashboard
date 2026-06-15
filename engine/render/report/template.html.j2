@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ council_name }} — Buildings Renewal Outlook</title>
+<style>{{ stylesheet }}</style>
+</head>
+<body>
+
+<!-- ===================== COVER ===================== -->
+<section class="page page--cover">
+  <div class="cover-inner">
+    <div>
+      <div class="cover-motto">
+        {{ motto }}
+        <small>“Let us build for those who come after us.”</small>
+      </div>
+    </div>
+    <div>
+      <h1 class="cover-title">{{ council_name }}<br><span class="accent">Buildings Renewal Outlook</span></h1>
+      <p class="cover-sub">A {{ horizon }}-year, climate-adjusted view of the renewal liability across the council&rsquo;s building portfolio — and the funding gap the community will inherit on the current budget.</p>
+    </div>
+    <div class="cover-meta">
+      Prepared by <strong>Social Capital Advisory</strong><br>
+      {{ scenario_label }} &middot; {{ horizon }}-year horizon &middot; {{ generated_on }}
+    </div>
+  </div>
+</section>
+
+<!-- ===================== PAGE 1 — EXECUTIVE NARRATIVE ===================== -->
+<section class="page">
+  <p class="eyebrow">Executive summary</p>
+  <h1 class="section">Building for those who come after us</h1>
+
+  <p class="lede">The City of Mitcham&rsquo;s motto, <span class="motto-inline">{{ motto }}</span> — “let us build for those who come after us” — sets the test for this report. The buildings the council holds today are an inheritance owed to the residents of {{ end_year }} and beyond. This outlook asks a single question: on the current renewal budget, is that inheritance being protected?</p>
+
+  <h2 class="sub">What this report finds</h2>
+  {% if headline %}
+  <p>Across a {{ horizon }}-year horizon under the {{ scenario_label_lower }} scenario, the portfolio generates a renewal demand with a central estimate of <strong>{{ demand_p50 }}</strong>. Against funded capacity of <strong>{{ capacity }}</strong> ({{ annual_budget }} per year for {{ horizon }} years), this leaves an unfunded renewal liability of <strong>{{ gap_p50 }}</strong> at the central (p50) estimate, with a modelled range of {{ gap_p05 }} to {{ gap_p95 }} across the simulated futures.</p>
+  <p>{% if gap_is_material %}This is a material gap. Left unaddressed, it compounds: deferred renewals do not disappear, they accumulate as condition decline and, eventually, as service failure in the very buildings the community relies on.{% else %}On these settings the gap is modest, but it is sensitive to climate scenario and budget — the bands in this report show how quickly that position can move.{% endif %} The works programme on page 3 sets out where the first dollars do the most to hold the line.</p>
+  {% else %}
+  <p>The simulation tables for this database are not yet populated, so no headline liability can be reported. Run the simulate and optimise stages, then regenerate this outlook.</p>
+  {% endif %}
+
+  <h2 class="sub">How to read it</h2>
+  <p>Every figure here is a distribution, not a point. The engine runs the portfolio forward across many plausible futures — varying deterioration, unit rates and climate exposure — and reports the median (p50) alongside a p05–p95 band. The band is the honest part: it is the range a prudent council should plan against, not a single tidy number.</p>
+
+  <div class="callout">
+    <strong>Decision support, not decision authority.</strong> This outlook is built from public-signal proxies and modelled priors. It is designed to frame the renewal conversation and stress-test the budget — not to replace the council&rsquo;s asset registers, condition audits or its own professional judgement.
+  </div>
+
+  <div class="footer">
+    <span>{{ council_name }} — Buildings Renewal Outlook</span>
+    <span class="motto">{{ motto }}</span>
+    <span>Prepared by Social Capital Advisory &middot; {{ generated_on }}</span>
+  </div>
+</section>
+
+<!-- ===================== PAGE 2 — HEADLINE NUMBERS ===================== -->
+<section class="page">
+  <p class="eyebrow">The headline</p>
+  <h1 class="section">The {{ horizon }}-year funding position</h1>
+
+  {% if headline %}
+  <div class="headline">
+    <p class="label">Unfunded renewal liability &middot; {{ horizon }}-year &middot; {{ scenario_label }}</p>
+    <p class="figure">{{ gap_p50 }}</p>
+    <p class="band">Central (p50) estimate. Modelled range {{ gap_p05 }} – {{ gap_p95 }} (p05–p95).</p>
+  </div>
+
+  <div class="metric-grid">
+    <div class="metric">
+      <p class="label">Renewal demand (p50)</p>
+      <p class="value">{{ demand_p50 }}</p>
+    </div>
+    <div class="metric">
+      <p class="label">Funded capacity ({{ horizon }} yr)</p>
+      <p class="value">{{ capacity }}</p>
+    </div>
+    <div class="metric">
+      <p class="label">Annual budget assumed</p>
+      <p class="value">{{ annual_budget }}</p>
+    </div>
+  </div>
+
+  <h2 class="sub">Reading the band</h2>
+  <p>The demand band runs from {{ demand_p05 }} (p05, a benign future) to {{ demand_p95 }} (p95, an adverse one). Funded capacity of {{ capacity }} is a fixed line across all of them. Where demand sits above that line, the difference is the unfunded liability — the renewal work the current budget cannot reach.</p>
+  <p>The gap is reported after flooring at zero in each future: a future where demand falls below capacity contributes no surplus to offset the futures where it does not. That is deliberate — councils cannot bank an unspent renewal dollar against a worse year a decade later.</p>
+  {% else %}
+  <div class="callout"><strong>No simulation data.</strong> The Monte Carlo tables are empty for this database, so no headline can be shown.</div>
+  {% endif %}
+
+  <div class="footer">
+    <span>{{ council_name }} — Buildings Renewal Outlook</span>
+    <span class="motto">{{ motto }}</span>
+    <span>Prepared by Social Capital Advisory &middot; {{ generated_on }}</span>
+  </div>
+</section>
+
+<!-- ===================== PAGE 3 — WORKS PROGRAMME ===================== -->
+<section class="page">
+  <p class="eyebrow">Where to start</p>
+  <h1 class="section">Prioritised works programme</h1>
+  <p>The buildings below are the optimiser&rsquo;s priority set under the {{ scenario_label_lower }} scenario — those whose renewal appears in the recommended programme. Rows flagged <span class="flag">robust</span> are renewed across nearly all simulated futures: they are the no-regrets core of the programme and are tinted gold.</p>
+  <p>This programme is what the budget <em>can</em> reach — it fits the renewal work inside {{ annual_budget }} per year, prioritised to hold back the most service risk. The unfunded liability on page 2 is the complementary figure: the renewal demand the same budget <em>cannot</em> reach over the horizon.</p>
+
+  {% if works %}
+  <table class="works">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Building (asset)</th>
+        <th class="num">Renewal year (p50)</th>
+        <th class="num">Renewal share</th>
+        <th class="num">Mean cost</th>
+        <th>Robust</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for w in works %}
+      <tr class="{{ 'robust' if w.robust else '' }}">
+        <td class="num">{{ loop.index }}</td>
+        <td>{{ w.asset_id }}</td>
+        <td class="num">{{ w.renew_year_p50 }}</td>
+        <td class="num">{{ w.renew_share_pct }}</td>
+        <td class="num">{{ w.mean_cost_fmt }}</td>
+        <td>{% if w.robust %}<span class="flag">robust</span>{% else %}<span class="flag no">conditional</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="legend">Showing the top {{ works|length }} buildings by robustness, then by scheduled renewal year. “Renewal share” is the fraction of simulated futures in which the building is renewed within the horizon. Costs are mean modelled renewal cost.</p>
+  {% else %}
+  <div class="callout"><strong>No optimised programme.</strong> The <code>opt_summary</code> table is empty — run the optimise stage to populate the works programme.</div>
+  {% endif %}
+
+  <div class="footer">
+    <span>{{ council_name }} — Buildings Renewal Outlook</span>
+    <span class="motto">{{ motto }}</span>
+    <span>Prepared by Social Capital Advisory &middot; {{ generated_on }}</span>
+  </div>
+</section>
+
+<!-- ===================== PAGE 4 — METHOD & CAVEATS ===================== -->
+<section class="page">
+  <p class="eyebrow">How it was built</p>
+  <h1 class="section">Method &amp; caveats</h1>
+
+  <h2 class="sub">The engine</h2>
+  <ul class="method">
+    <li><strong>Monte Carlo simulation.</strong> Each building component is aged forward over the {{ horizon }}-year horizon across many realisations, drawing deterioration and unit-rate parameters from calibrated priors. A component enters renewal demand when its condition reaches the intervention threshold.</li>
+    <li><strong>Climate adjustment.</strong> Deterioration is accelerated by hazard exposure under the chosen scenario ({{ scenario_label }}), so the outlook reflects a warming-adjusted, not a static, asset base.</li>
+    <li><strong>CVaR-aware optimisation.</strong> The works programme comes from a two-stage stochastic optimisation that minimises a Conditional Value-at-Risk (CVaR) measure of residual service risk — it hedges against the worst-case tail of futures, not just the average.</li>
+    <li><strong>Robustness flag.</strong> A building is “robust” when it is selected for renewal across nearly all simulated futures, marking it as a no-regrets investment.</li>
+  </ul>
+
+  <h2 class="sub">Sources &amp; assumptions</h2>
+  <ul class="method">
+    <li>Asset register derived from public-signal proxies for the {{ council_name }} buildings portfolio, not the council&rsquo;s own confidential registers.</li>
+    <li>Climate exposure follows RCP-style scenario pathways (no-climate / RCP 4.5 / RCP 8.5) applied at the component level.</li>
+    <li>Funded capacity assumes a flat annual renewal budget of {{ annual_budget }} held constant for {{ horizon }} years ({{ capacity }} total); it is not indexed.</li>
+  </ul>
+
+  <div class="callout">
+    <strong>Decision support, not decision authority.</strong> This report is a planning and conversation tool. Figures are modelled and carry the uncertainty shown in the p05–p95 bands. Before any funding decision, validate against current condition audits, the council&rsquo;s asset registers and professional engineering judgement. The motto holds: <span class="motto-inline">{{ motto }}</span> — the point of the model is to help build well for those who come after.
+  </div>
+
+  <div class="footer">
+    <span>{{ council_name }} — Buildings Renewal Outlook</span>
+    <span class="motto">{{ motto }}</span>
+    <span>Prepared by Social Capital Advisory &middot; {{ generated_on }}</span>
+  </div>
+</section>
+
+</body>
+</html>

@@ -1,0 +1,45 @@
+{
+  "council": "mitcham",
+  "asset_class": "buildings",
+  "data_as_at": "2024-09-01",
+  "n_buildings": 215,
+  "geo_centroid": {"lat": -34.99, "lon": 138.62},
+  "geo_jitter_km": 4.0,
+  "building_types": [
+    {"type": "library",            "count": 4,  "median_extent_m2": 1100, "extent_cv": 0.3, "median_age": 32},
+    {"type": "community_centre",   "count": 18, "median_extent_m2": 650,  "extent_cv": 0.4, "median_age": 28},
+    {"type": "aquatic_centre",     "count": 2,  "median_extent_m2": 3400, "extent_cv": 0.2, "median_age": 24},
+    {"type": "sports_pavilion",    "count": 35, "median_extent_m2": 380,  "extent_cv": 0.5, "median_age": 36},
+    {"type": "civic_centre",       "count": 3,  "median_extent_m2": 2200, "extent_cv": 0.2, "median_age": 41},
+    {"type": "depot",              "count": 6,  "median_extent_m2": 950,  "extent_cv": 0.3, "median_age": 38},
+    {"type": "public_toilet",      "count": 64, "median_extent_m2": 40,   "extent_cv": 0.2, "median_age": 22},
+    {"type": "kiosk_shelter",      "count": 71, "median_extent_m2": 35,   "extent_cv": 0.4, "median_age": 20},
+    {"type": "heritage_building",  "count": 12, "median_extent_m2": 280,  "extent_cv": 0.6, "median_age": 95}
+  ],
+  "components": [
+    {"component": "roof",       "share_of_grc": 0.10, "useful_life_years": 40},
+    {"component": "envelope",   "share_of_grc": 0.18, "useful_life_years": 60},
+    {"component": "structure",  "share_of_grc": 0.30, "useful_life_years": 100},
+    {"component": "internal",   "share_of_grc": 0.18, "useful_life_years": 25},
+    {"component": "hvac",       "share_of_grc": 0.10, "useful_life_years": 20},
+    {"component": "electrical", "share_of_grc": 0.08, "useful_life_years": 30},
+    {"component": "hydraulic",  "share_of_grc": 0.06, "useful_life_years": 35}
+  ],
+  "condition_distribution_by_value": {
+    "very_good": 0.31,
+    "good": 0.40,
+    "fair": 0.27,
+    "poor_or_very_poor": 0.02
+  },
+  "total_grc_aud": 48100000,
+  "unit_rate_per_m2_by_type": {
+    "library": 4800, "community_centre": 3900, "aquatic_centre": 6800,
+    "sports_pavilion": 3500, "civic_centre": 5200, "depot": 2900,
+    "public_toilet": 5100, "kiosk_shelter": 2400, "heritage_building": 7200
+  },
+  "source_documents": [
+    "buildings-amp-narrative.md",
+    "abp-budget-ltfp-2025-26-full.pdf"
+  ],
+  "provenance": "Synthesised from City of Mitcham published Buildings AMP narrative and 2025-26 ABP/LTFP. Counts and condition mix match published distributions; individual building records are synthesised, not actual. Component shares and useful lives are IPWEA/IIMM-aligned priors."
+}

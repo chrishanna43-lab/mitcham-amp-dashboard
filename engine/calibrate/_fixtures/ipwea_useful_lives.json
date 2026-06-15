@@ -1,0 +1,26 @@
+{
+  "components": {
+    "roof":       {"useful_life_mu": 40,  "useful_life_sigma": 8,  "unit_rate": 420, "unit_rate_cv": 0.20},
+    "envelope":   {"useful_life_mu": 60,  "useful_life_sigma": 12, "unit_rate": 720, "unit_rate_cv": 0.25},
+    "structure":  {"useful_life_mu": 100, "useful_life_sigma": 20, "unit_rate": 980, "unit_rate_cv": 0.30},
+    "internal":   {"useful_life_mu": 25,  "useful_life_sigma": 5,  "unit_rate": 540, "unit_rate_cv": 0.20},
+    "hvac":       {"useful_life_mu": 20,  "useful_life_sigma": 4,  "unit_rate": 380, "unit_rate_cv": 0.25},
+    "electrical": {"useful_life_mu": 30,  "useful_life_sigma": 6,  "unit_rate": 290, "unit_rate_cv": 0.20},
+    "hydraulic":  {"useful_life_mu": 35,  "useful_life_sigma": 7,  "unit_rate": 230, "unit_rate_cv": 0.20}
+  },
+  "climate_factors": [
+    {"component": "roof",       "hazard": "heat",     "k": 0.020},
+    {"component": "roof",       "hazard": "bushfire", "k": 0.060},
+    {"component": "envelope",   "hazard": "heat",     "k": 0.010},
+    {"component": "envelope",   "hazard": "flood",    "k": 0.025},
+    {"component": "envelope",   "hazard": "bushfire", "k": 0.050},
+    {"component": "structure",  "hazard": "flood",    "k": 0.035},
+    {"component": "internal",   "hazard": "flood",    "k": 0.080},
+    {"component": "internal",   "hazard": "heat",     "k": 0.015},
+    {"component": "hvac",       "hazard": "heat",     "k": 0.045},
+    {"component": "electrical", "hazard": "heat",     "k": 0.018},
+    {"component": "electrical", "hazard": "flood",    "k": 0.040},
+    {"component": "hydraulic",  "hazard": "flood",    "k": 0.030}
+  ],
+  "notes": "Acceleration factor k: additional condition-units lost per year per unit hazard intensity. Conservative priors; calibratable against audit history when shared. Basis: IPWEA Practice Notes + IIMM + author judgement; subject to engineer review."
+}
