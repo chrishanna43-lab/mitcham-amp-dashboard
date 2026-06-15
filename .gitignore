@@ -6,12 +6,12 @@ __pycache__/
 .venv/
 venv/
 
-# Databases — the demo DuckDB is large (~500 MB) and reproducible.
-# Do NOT commit it directly. Either build it (scripts/build_demo_db.py),
-# track a slimmed copy via Git LFS, or host it and set LGA_AMP_DB_URL.
+# Databases. Large local builds (full-resolution) stay out of git...
 *.duckdb
 *.duckdb.wal
 *.wal
+# ...except the bundled, right-sized demo DB the dashboard ships with.
+!data/lga_amp.duckdb
 
 # Generated demo report
 data/*.html
