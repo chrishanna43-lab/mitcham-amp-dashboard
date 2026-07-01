@@ -56,18 +56,37 @@ def sample_trajectory(
         A ``(years,)`` float array of condition values. The path is monotonic
         non-decreasing and bounded above by 5.0.
     """
-    traj = np.empty(years, dtype=float)
-    prev = float(initial_condition)
+    c0 = float(initial_condition)
+    # Base decay increments follow the convex age curve from the asset's
+    # CHRONOLOGICAL age. [H3 — flagged, NOT applied] The review proposed re-
+    # anchoring the curve to the observed condition (taking increments from the
+    # effective age where the curve equals c0). Re-anchoring is theoretically
+    # reasonable, but with this convex curve (very flat early) the condition→
+    # effective-age inversion is hyper-sensitive: an asset observed at, say, 1.5
+    # maps to ~39% of useful life and is then deteriorated from there, breaching
+    # within the horizon — an implausible acceleration of good-condition assets
+    # (it ~6x'd portfolio demand on the Mitcham register). HOW to project from
+    # observed condition vs chronological age is a deterioration-curve calibration
+    # decision for the chartered engineer, not a silent code change. Left on the
+    # chronological-age basis pending that sign-off (see the calc-solver review).
     age = float(initial_age)
-    for t in range(years):
-        delta_base = max(
-            0.0,
-            condition_at_age(age + 1.0, useful_life)
-            - condition_at_age(age, useful_life),
-        )
-        delta_clim = float(np.dot(component_factors, hazard_intensities[:, t]))
-        noise = rng.normal(0.0, base_noise_sigma)
-        prev = min(5.0, max(prev, prev + delta_base + delta_clim + noise))
-        traj[t] = prev
-        age += 1.0
-    return traj
+    base = np.array(
+        [
+            condition_at_age(age + t + 1.0, useful_life)
+            - condition_at_age(age + t, useful_life)
+            for t in range(years)
+        ],
+        dtype=float,
+    )
+    base = np.maximum(base, 0.0)
+    clim = np.asarray(component_factors, dtype=float) @ hazard_intensities  # (years,)
+    # [H2] Carry the Gaussian noise in a LATENT (unclamped) path so negative draws
+    # genuinely offset positive ones. The previous per-step ``max(prev, …)`` floor
+    # truncated every negative draw to zero effect, turning supposedly mean-zero
+    # noise into a one-sided upward ratchet that compounded over the horizon.
+    noise = rng.normal(0.0, base_noise_sigma, size=years)
+    latent = c0 + np.cumsum(base + clim + noise)
+    # Report a monotonic non-decreasing path (condition cannot improve without
+    # renewal), floored at the observed condition and capped at failure (5.0). The
+    # clamp is applied to the latent path at reporting time, not per step.
+    return np.clip(np.maximum.accumulate(np.maximum(latent, c0)), 1.0, 5.0)

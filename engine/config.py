@@ -16,10 +16,12 @@ N_REALISATIONS = 5_000
 SCENARIOS = ("no_climate", "rcp45", "rcp85")
 RANDOM_SEED = 20260527
 
-# Demo renewal budget: ~2% of the $48.1M Mitcham buildings portfolio, a
-# defensible sustainable-renewal rate. Low enough that climate opens a real
-# funding gap (the demo's point); override per run with --annual-budget.
-DEMO_ANNUAL_BUDGET = 1_000_000.0
+# Demo renewal budget: the rate the dashboard demonstrates by default (~1.7% of
+# the $48.1M Mitcham buildings portfolio). Low enough that a real funding gap
+# remains (the demo's point); override per run with --annual-budget. Kept equal
+# to the dashboard slider default so the funded programme, the spend-by-year
+# chart and the headline gap are all coherent at one budget.
+DEMO_ANNUAL_BUDGET = 800_000.0
 
 
 class EngineConfig(BaseModel):

@@ -199,6 +199,7 @@ def solve_all(
     seed: int = 0,
     granularity: str = "building",
     value_weighted: bool = True,
+    relax: bool = True,
     engagement: dict[str, float] | None = None,
     engagement_strength: float = 1.0,
     label: str = "stochastic",
@@ -274,33 +275,57 @@ def solve_all(
     # On the continuous relaxation a building whose total cost exceeds the
     # ``budget × horizon`` cap can't sum to 1 but can still meet the renewal bar.
     x_cvar, obj, status, realised = solve_stochastic(
-        cost, unit_breach, budget, lam=lam, solver=solver, time_limit=120.0,
+        cost, unit_breach, budget, lam=lam, solver=solver, relax=relax, time_limit=120.0,
         must_renew_idx=must_renew_idx, must_renew_floor=_RENEW_INTENSITY,
     )
     renewed_cvar = x_cvar.sum(axis=1) >= _RENEW_INTENSITY
     if robust_pass:
-        x_rn, _, _, _ = solve_stochastic(
-            cost, unit_breach, budget, lam=0.0, solver=solver, time_limit=120.0,
+        x_rn, _, status_rn, _ = solve_stochastic(
+            cost, unit_breach, budget, lam=0.0, solver=solver, relax=relax, time_limit=120.0,
             must_renew_idx=must_renew_idx, must_renew_floor=_RENEW_INTENSITY,
         )
-        robust = renewed_cvar & (x_rn.sum(axis=1) >= _RENEW_INTENSITY)
+        robust_raw = renewed_cvar & (x_rn.sum(axis=1) >= _RENEW_INTENSITY)
     else:
-        robust = renewed_cvar
+        status_rn = "optimal"
+        robust_raw = renewed_cvar
+
+    # The renewal policy is a DIVISIBLE intensity: the per-year budget bounds
+    # sum_i cost_i*x_{i,t}, so a large renewal is legitimately funded across
+    # several years (instalments). A unit counts as scheduled when its intensity
+    # reaches _RENEW_INTENSITY; its modal (argmax-intensity) year is the primary
+    # renewal year. We therefore do NOT force every renewal into a single year.
+    renewed = renewed_cvar
+    robust = robust_raw
     renew_years = _renew_years(x_cvar)
+    # [M1] Honest renewal share — the fraction of the renewal the policy funds
+    # within the horizon (clipped to [0,1]), not a hard 1.0; a partly-funded
+    # multi-year renewal now reads as partial.
+    renew_share = np.clip(x_cvar.sum(axis=1), 0.0, 1.0)
+    # [M8] Actual capex per year = sum_i cost_i*x_{i,t} (the spread the budget
+    # constraint actually bounds), persisted so the spend-vs-budget chart reflects
+    # the real per-year commitment rather than a full-cost lump in the modal year.
+    year_spend = (cost * x_cvar).sum(axis=0)
+    # [M2] Did both passes solve cleanly? The caller skips persistence / surfaces
+    # the failure instead of treating an infeasible all-zero schedule as optimal.
+    _OK = ("optimal", "optimal_inaccurate")
+    solve_ok = (status in _OK) and (status_rn in _OK if robust_pass else True)
 
     # Per-unit programme (always returned; used by the live engagement lens).
     units = [
         {
             "asset_id": unit_ids[i],
-            "renewed": bool(renewed_cvar[i]),
-            "renew_year": (int(renew_years[i]) if renew_years[i] is not None else None),
+            "renewed": bool(renewed[i]),
+            "renew_year": renew_years[i],
             "robust": bool(robust[i]),
             "mean_cost": float(unit_cost[i]),
+            "renew_share": float(renew_share[i]),
         }
         for i in range(n)
     ]
 
-    if persist:
+    # [M2] Never persist a failed/infeasible solve as an optimal all-deferred
+    # schedule; the caller reads ``solve_ok`` and surfaces the failure instead.
+    if persist and solve_ok:
         # opt_summary — one row per decision unit, under ``label``.
         summary = pd.DataFrame(
             {
@@ -309,7 +334,7 @@ def solve_all(
                 "renew_year_p50": [
                     (int(y) if y is not None else None) for y in renew_years
                 ],
-                "renew_share": [1.0 if renewed_cvar[i] else 0.0 for i in range(n)],
+                "renew_share": [float(renew_share[i]) for i in range(n)],
                 "robust": [bool(robust[i]) for i in range(n)],
                 "mean_cost": [float(unit_cost[i]) for i in range(n)],
             },
@@ -318,6 +343,18 @@ def solve_all(
         summary["renew_year_p50"] = summary["renew_year_p50"].astype("Int64")
         conn.execute("DELETE FROM opt_summary WHERE scenario = ?", [label])
         insert_dataframe(conn, "opt_summary", summary)
+
+        # [M8] opt_spend — actual capex per year (the spread), keyed by label.
+        spend_df = pd.DataFrame(
+            {
+                "scenario": [label] * horizon,
+                "year": list(range(CURRENT_YEAR, CURRENT_YEAR + horizon)),
+                "spend": [float(s) for s in year_spend],
+            },
+            columns=["scenario", "year", "spend"],
+        )
+        conn.execute("DELETE FROM opt_spend WHERE scenario = ?", [label])
+        insert_dataframe(conn, "opt_spend", spend_df)
 
         # opt_solutions — realised cost per sampled scenario (funding-gap dist).
         # Gated so a second (engagement) variant does not clobber the first.
@@ -338,8 +375,10 @@ def solve_all(
     return {
         "n_assets": n,
         "granularity": granularity,
-        "n_renewed": int(renewed_cvar.sum()),
+        "n_renewed": int(renewed.sum()),
         "n_robust": int(robust.sum()),
+        "solve_ok": bool(solve_ok),
+        "status_robust": status_rn,
         "units": units,
         "status": status,
         "objective": obj,

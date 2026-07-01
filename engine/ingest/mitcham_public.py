@@ -69,6 +69,85 @@ def _load_fixture() -> dict:
     return json.loads(_FIXTURE.read_text(encoding="utf-8"))
 
 
+# Component fan-out shape, shared by ``generate_register`` and the proposal
+# builder. Sourced from the fixture so the two paths can never drift; falls back
+# to the fixture on disk so callers (e.g. the proposal builder) need no fixture
+# handle of their own.
+def _component_specs() -> list[dict]:
+    """The seven (component, share_of_grc, useful_life_years) fixture rows."""
+    return _load_fixture()["components"]
+
+
+def _components_for_building(
+    *,
+    building_id: str,
+    name: str | None,
+    asset_type: str,
+    suburb: str | None,
+    council: str,
+    asset_class: str,
+    install_year: int,
+    condition,
+    building_value: float,
+    criticality_seed: float | None,
+    extent: float | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+    components: list[dict] | None = None,
+) -> list[Asset]:
+    """Fan a single building over its seven components into validated ``Asset`` rows.
+
+    The shared inner fan-out behind both ``generate_register`` and the What-If
+    proposal builder (``engine.ingest.proposed.build_proposed_building``).
+
+    Contract (deliberately narrow so the proposal schema can never drift from the
+    canonical ingest schema):
+
+    - ``building_value`` is **final** — each component's GRC is
+      ``building_value * share_of_grc``; no portfolio-wide rescale happens here
+      (``generate_register`` applies its published-total anchor afterwards).
+    - ``condition`` is either a **scalar** applied to every component, or a
+      sequence of one condition per component (in fixture order). The proposal
+      builder passes a scalar; ``generate_register`` passes its per-component
+      resampled values so the refactor is byte-identical.
+    - ``asset_class`` is threaded as a parameter (the ``Asset`` model forbids
+      extras, so an absent/extra field is a ``ValidationError``).
+    """
+    comps = components if components is not None else _component_specs()
+    if isinstance(condition, (int, float)):
+        conditions = [float(condition)] * len(comps)
+    else:
+        conditions = [float(c) for c in condition]
+        if len(conditions) != len(comps):
+            raise ValueError(
+                f"condition sequence length {len(conditions)} != {len(comps)} components"
+            )
+
+    rows: list[Asset] = []
+    for comp, cond in zip(comps, conditions):
+        comp_grc = building_value * comp["share_of_grc"]
+        rows.append(
+            Asset(
+                asset_id=f"{building_id}-{comp['component']}",
+                name=name,
+                suburb=suburb,
+                council=council,
+                asset_type=asset_type,
+                asset_class=asset_class,
+                component=comp["component"],
+                install_year=install_year,
+                useful_life_years=float(comp["useful_life_years"]),
+                condition=cond,
+                grc=comp_grc,
+                extent=extent,
+                lat=lat,
+                lon=lon,
+                criticality_seed=criticality_seed,
+            )
+        )
+    return rows
+
+
 def generate_register(seed: int = 42) -> list[Asset]:
     """Synthesise the row-level Mitcham buildings register.
 
@@ -114,30 +193,35 @@ def generate_register(seed: int = 42) -> list[Asset]:
 
             building_value = extent * unit_rate
 
-            for comp in components:
-                comp_grc = building_value * comp["share_of_grc"]
+            # Resample condition per component (preserving the exact rng draw
+            # order: band then condition, component by component) and hand the
+            # full condition vector to the shared fan-out helper.
+            conditions: list[float] = []
+            for _comp in components:
                 band = band_names[int(rng.choice(len(band_names), p=band_probs))]
                 midpoint = _BAND_MIDPOINT[band]
-                condition = float(np.clip(rng.normal(midpoint, _CONDITION_SIGMA), 1.0, 5.0))
-
-                rows.append(
-                    Asset(
-                        asset_id=f"{building_id}-{comp['component']}",
-                        name=building_name,
-                        council="mitcham",
-                        asset_type=btype,
-                        asset_class=fx["asset_class"],
-                        component=comp["component"],
-                        install_year=install_year,
-                        useful_life_years=float(comp["useful_life_years"]),
-                        condition=condition,
-                        grc=comp_grc,
-                        extent=extent,
-                        lat=lat,
-                        lon=lon,
-                        criticality_seed=criticality_seed,
-                    )
+                conditions.append(
+                    float(np.clip(rng.normal(midpoint, _CONDITION_SIGMA), 1.0, 5.0))
                 )
+
+            rows.extend(
+                _components_for_building(
+                    building_id=building_id,
+                    name=building_name,
+                    asset_type=btype,
+                    suburb=None,
+                    council="mitcham",
+                    asset_class=fx["asset_class"],
+                    install_year=install_year,
+                    condition=conditions,
+                    building_value=building_value,
+                    criticality_seed=criticality_seed,
+                    extent=extent,
+                    lat=lat,
+                    lon=lon,
+                    components=components,
+                )
+            )
 
     # Anchor the synthesised portfolio total to the published figure.
     raw_sum = sum(r.grc for r in rows)

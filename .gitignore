@@ -1,10 +1,15 @@
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .ruff_cache/
 .venv/
 venv/
+
+# Local agent / tooling state — never part of the deployed app
+.omc/
+.superpowers/
 
 # Databases. Large local builds (full-resolution) stay out of git...
 *.duckdb

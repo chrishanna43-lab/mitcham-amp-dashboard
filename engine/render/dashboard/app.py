@@ -16,11 +16,21 @@ from pathlib import Path
 
 import duckdb
 
-from engine.config import DEFAULT_DB
+from engine.config import DEFAULT_DB, HORIZON_STRESS
 from engine.render.metrics import (
+    ARFR_BAND,
+    ASR_BAND,
+    GRADE_NUMBER,
+    acr_status,
+    arfr_compliance,
+    backlog_status,
+    band_status,
     climate_exposure_value,
     condition_grade,
+    condition_grade_number,
+    financial_indicators,
     gap_trajectory,
+    minimum_sustainable_budget,
     report_card,
     unfunded_liability,
 )
@@ -36,11 +46,30 @@ from engine.render.timing import deferral_timing
 
 CURRENT_YEAR = 2026
 
-# Mitcham brand palette + motto (SCA on the prepared-by line).
-MITCHAM_GREEN = "#01310c"
-BRIGHT_GREEN = "#097556"
-GOLD = "#fbec30"
-CHARCOAL = "#1c2316"
+# "Bloom" pastel palette (dusty lavender + sage) — the refreshed look. The
+# product remains the City of Mitcham demo; only the colour system changed.
+# Semantic colours (good/watch/act) are kept accessible and are always paired
+# with a glyph + word in the UI; the embers ramp is reserved for climate/hazard.
+INK = "#2d293a"
+DEEP = "#4a4567"          # deep structural tone — brand bar, heading emphasis
+ACCENT = "#897eb0"        # primary accent (lavender)
+ACCENT_DEEP = "#6e639b"
+ACCENT_2 = "#bcb2d6"
+RULE = "#c79fb6"          # soft mauve rule accent — never text, never data
+GOOD = "#3f8a6b"
+WATCH = "#b07a12"
+ACT = "#c0603a"
+EMBERS = ("#e7d9ad", "#e0a85a", "#cf7233", "#9a3b2e", "#6c2742")
+# Continuous colourscales (Plotly form) — lavender for temporal data, the embers
+# ramp for climate/condition heat. Replaces Viridis / YlOrRd / RdYlGn (the last
+# being colour-blind-unsafe) so the maps match the Bloom palette.
+LAVENDER_SCALE = [[0.0, "#6e639b"], [0.5, "#a99ec9"], [1.0, "#e2dcef"]]
+EMBERS_SCALE = [[0.0, "#e7d9ad"], [0.25, "#e0a85a"], [0.5, "#cf7233"], [0.75, "#9a3b2e"], [1.0, "#6c2742"]]
+# Back-compat aliases (legacy names still referenced across the module).
+MITCHAM_GREEN = DEEP
+BRIGHT_GREEN = ACCENT
+GOLD = RULE
+CHARCOAL = INK
 MOTTO = "POSTERIS AEDIFICEMUS"
 SCENARIOS = ("no_climate", "rcp45", "rcp85")
 SCENARIO_LABELS = {
@@ -198,6 +227,19 @@ def _gather_panels(
             climate_exposure_value(conn, scenario, horizon)
             if not _table_is_empty(conn, "climate_exposure") else None
         ),
+        # Keyword args are MANDATORY for horizon/annual_budget — positional order
+        # silently swaps them (→ horizon=annual_budget, a garbage screen, no raise).
+        "financial_indicators": (
+            financial_indicators(conn, scenario, horizon=horizon, annual_budget=annual_budget)
+            if has_mc and not _table_is_empty(conn, "assets") else None
+        ),
+        "arfr_compliance": (
+            arfr_compliance(conn, scenario, horizon=horizon, annual_budget=annual_budget)
+            if has_mc else None
+        ),
+        "min_budget": (
+            minimum_sustainable_budget(conn, scenario, horizon=horizon) if has_mc else None
+        ),
     }
 
 
@@ -225,12 +267,19 @@ def render_dashboard(
             f"Dashboard DB not found at {db_path!s}. Run `lga-amp pipeline` to "
             f"create it, or pass --db <path-to-existing-file>."
         )
-    conn = duckdb.connect(str(db_path))
+    # [FIX-D1] Open the canonical connection READ-ONLY. The render path is
+    # SELECT-only and the sole solve_all call site passes persist=False, so this
+    # is safe; it converts any mis-wired write into a loud exception instead of
+    # silent corruption of the canonical DB (which the What-If shadow flow relies
+    # on as an invariant, not a convention).
+    conn = duckdb.connect(str(db_path), read_only=True)
     try:
         panels = _gather_panels(conn, scenario, annual_budget, horizon)
         if headless:
             return panels
-        _render_streamlit(conn, panels, scenario, annual_budget, horizon)
+        # Thread the canonical PATH (not the read-only conn) into the render path
+        # so the What-If view can mint a writable file-copy shadow from it.
+        _render_streamlit(conn, panels, scenario, annual_budget, horizon, db_path)
         return panels
     finally:
         conn.close()
@@ -247,83 +296,155 @@ def _fmt_money(value: float) -> str:
 
 
 def _inject_brand_css(st) -> None:
-    """City of Mitcham brand in a modern, full-width dashboard style."""
+    """The 'Bloom' refreshed look — pastel lavender, no framework chrome, a
+    branded top bar with horizontal nav (the sidebar is hidden; controls live up
+    top). Data stays crisp dark; semantic colours are accessible + glyph-paired."""
     st.markdown(
         """
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
         :root{
-          --green:#01310c; --green-b:#097556; --green-2:#0a5a30; --gold:#fbec30;
-          --ink:#17231a; --muted:#6b7568; --bg:#f5f7f4; --card:#ffffff;
-          --line:#e8ece8; --mint:#e9f3ee;
+          --ink:#2d293a; --ink-2:#423c52; --muted:#746d82; --muted-2:#9f96ac;
+          --bg:#f1eef6; --paper-2:#e9e3f1; --card:#ffffff; --line:#e6e0ee; --line-2:#d9d1e4;
+          --deep:#4a4567; --accent:#897eb0; --accent-d:#6e639b; --accent-2:#bcb2d6;
+          --accent-soft:rgba(137,126,176,0.16); --mint:#ece5f4; --rule:#c79fb6;
+          --good:#3f8a6b; --good-bg:#e2efe8; --watch:#b07a12; --watch-bg:#f6ecd6;
+          --act:#c0603a; --act-bg:#f6e6df; --bar:#4a4567;
+          --shadow:0 1px 2px rgba(45,41,58,0.05),0 6px 20px rgba(45,41,58,0.07);
         }
         .stApp{ background:var(--bg); color:var(--ink); }
         html, body, [class*="css"], .stMarkdown, p, li, button, input, label, select, textarea{ font-family:'Inter', sans-serif; }
         h1,h2,h3,h4,h5{ font-family:'Inter', sans-serif !important; color:var(--ink) !important; font-weight:700; letter-spacing:-0.015em; }
-        .block-container{ max-width:100% !important; padding:1.3rem 2.4rem 3rem !important; }
-        header[data-testid="stHeader"]{ background:transparent; }
+        .block-container{ max-width:1340px !important; padding:0.4rem 2rem 1rem !important; }
+        .kpi-val,.hc-val,.bul-val,.bluf-fig,.dlt-val,[data-testid="stMetricValue"]{ font-variant-numeric:tabular-nums; }
 
-        /* ---- sidebar ---- */
-        [data-testid="stSidebar"]{ background:#ffffff; border-right:1px solid var(--line); min-width:340px !important; width:340px !important; }
-        [data-testid="stSidebar"] .block-container{ padding-top:1.1rem !important; }
-        .sb-brand{ display:flex; align-items:center; gap:0.85rem; padding:0.1rem 0.1rem 1rem; border-bottom:1px solid var(--line); margin-bottom:1rem; }
-        .sb-brand img{ height:96px; width:auto; }
-        .sb-brand .nm{ font-weight:700; font-size:0.95rem; color:var(--green); line-height:1.1; }
-        .sb-brand .sub{ font-size:0.68rem; color:var(--muted); letter-spacing:0.12em; }
-        .sb-foot{ font-size:0.7rem; color:var(--muted); line-height:1.55; border-top:1px solid var(--line); padding-top:0.8rem; margin-top:0.6rem; }
-        .sb-foot b{ color:var(--green); font-weight:600; }
+        /* ---- kill framework chrome ---- */
+        #MainMenu, [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"],
+        .stDeployButton, [data-testid="stDeployButton"], header[data-testid="stHeader"], footer{ display:none !important; }
+        /* ---- hide the sidebar (nav + controls live in the top bar) ---- */
+        [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"]{ display:none !important; }
 
-        [data-testid="stSidebar"] [role="radiogroup"]{ gap:0.15rem; }
-        [data-testid="stSidebar"] [role="radiogroup"] > label{ padding:0.45rem 0.6rem; border-radius:10px; }
-        [data-testid="stSidebar"] [role="radiogroup"] > label:hover{ background:var(--mint); }
-        [data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked){ background:var(--mint); }
-        [data-testid="stSidebar"] [role="radiogroup"] label p{ font-size:0.93rem !important; font-weight:600; color:var(--ink); }
+        /* ---- top brand bar ---- */
+        .appbar{ background:var(--bar); border-bottom:2px solid var(--rule); border-radius:14px;
+          padding:13px 20px; margin:0 0 0.5rem; display:flex; align-items:center; gap:14px; }
+        .appbar .nm{ font-weight:700; font-size:1.02rem; color:#fff; line-height:1.15; }
+        .appbar .sub{ font-size:0.66rem; letter-spacing:0.18em; text-transform:uppercase; color:rgba(255,255,255,0.6); font-weight:600; }
+        .appbar .prep{ margin-left:auto; text-align:right; font-size:0.72rem; color:rgba(255,255,255,0.66); }
+        .appbar .prep b{ color:#fff; } .appbar .prep .motto{ font-style:italic; color:var(--accent-2); }
+        .appbar .demo-badge{ display:inline-block; margin-left:11px; vertical-align:middle;
+          font-size:0.58rem; font-weight:800; letter-spacing:0.15em; text-transform:uppercase;
+          color:#fff; background:var(--rule); border-radius:6px; padding:2px 8px; }
+        .demo-note{ background:var(--card); border:1px solid var(--rule);
+          border-left:5px solid var(--rule); border-radius:12px; padding:0.7rem 1.05rem;
+          margin:0 0 0.95rem; font-size:0.85rem; color:var(--ink-2); line-height:1.46; }
+        .demo-note .lead{ color:var(--act); font-weight:800; letter-spacing:0.02em; }
+        .demo-note b{ color:var(--ink-2); font-weight:700; }
+
+        /* ---- nav + small radios rendered as pills ---- */
+        div[role="radiogroup"]{ gap:0.35rem; flex-wrap:wrap; }
+        div[role="radiogroup"] > label{ border-radius:999px; padding:0.32rem 0.85rem; border:1px solid var(--line); background:#fff; margin:0 !important; }
+        div[role="radiogroup"] > label:hover{ background:var(--mint); }
+        div[role="radiogroup"] > label:has(input:checked){ background:var(--accent); border-color:var(--accent); }
+        div[role="radiogroup"] > label:has(input:checked) p{ color:#fff !important; }
+        div[role="radiogroup"] label p{ font-size:0.86rem !important; font-weight:600; color:var(--ink); }
+        /* hide the baseweb radio circle — these read as pills; selection shows via the fill, not a dot */
+        div[role="radiogroup"] label > div:first-child{ display:none !important; }
+        /* the nav radio sits in .navbar and reads as the primary tab strip */
+        .navbar [role="radiogroup"] label{ padding:0.4rem 1.05rem; font-weight:600; }
 
         /* ---- page header ---- */
-        .page-h{ display:flex; justify-content:space-between; align-items:flex-end; gap:1rem; margin:0.1rem 0 1.2rem; }
-        .page-h .ttl{ font-size:1.55rem; font-weight:700; color:var(--ink); margin:0; letter-spacing:-0.02em; }
+        .page-h{ display:flex; justify-content:space-between; align-items:flex-end; gap:1rem; margin:0.4rem 0 1.0rem; }
+        .page-h .eyebrow{ font-size:0.78rem; letter-spacing:0.1em; text-transform:uppercase; color:var(--accent-d); font-weight:700; }
+        .page-h .ttl{ font-size:1.5rem; font-weight:700; color:var(--ink); margin:0.1rem 0 0; letter-spacing:-0.02em; }
         .page-h .sub{ color:var(--muted); font-size:0.9rem; margin:0.15rem 0 0; }
         .ctx-pills{ display:flex; gap:0.4rem; flex-wrap:wrap; }
-        .ctx{ background:#fff; border:1px solid var(--line); border-radius:999px; padding:0.3rem 0.75rem; font-size:0.78rem; font-weight:600; color:var(--green); white-space:nowrap; }
+        .ctx{ background:#fff; border:1px solid var(--line); border-radius:999px; padding:0.3rem 0.75rem; font-size:0.78rem; font-weight:600; color:var(--accent-d); white-space:nowrap; }
 
-        /* ---- hero feature card ---- */
-        .hero-card{ position:relative; overflow:hidden; border-radius:20px; padding:1.7rem 1.9rem;
-          background:linear-gradient(120deg,#01310c 0%,#0a5a30 58%,#097556 100%); color:#fff;
-          box-shadow:0 20px 44px -26px rgba(1,49,12,0.65); }
-        .hero-card::after{ content:""; position:absolute; right:-40px; top:-70px; width:280px; height:280px;
-          background:radial-gradient(circle,rgba(251,236,48,0.16),transparent 70%); }
-        .hc-label{ font-size:0.78rem; letter-spacing:0.08em; text-transform:uppercase; color:rgba(255,255,255,0.82); font-weight:600; margin:0; position:relative; z-index:1; }
-        .hc-val{ font-size:3.1rem; font-weight:800; line-height:1; margin:0.35rem 0 0.1rem; letter-spacing:-0.03em; position:relative; z-index:1; }
-        .hc-sub{ color:rgba(255,255,255,0.85); font-size:0.9rem; margin:0.2rem 0 0; position:relative; z-index:1; }
-        .hc-pills{ margin-top:1rem; display:flex; gap:0.5rem; flex-wrap:wrap; position:relative; z-index:1; }
-        .pill{ background:rgba(255,255,255,0.15); color:#fff; border:1px solid rgba(255,255,255,0.28); padding:0.3rem 0.75rem; border-radius:999px; font-size:0.78rem; font-weight:600; }
-        .pill.gold{ background:var(--gold); color:#1c2316; border-color:transparent; }
+        /* ---- BLUF hero ---- */
+        .bluf{ display:grid; grid-template-columns:1.5fr 1fr; overflow:hidden; border:1px solid var(--line);
+          border-radius:18px; box-shadow:var(--shadow); background:var(--card); }
+        .bluf-main{ padding:1.6rem 1.8rem; }
+        .bluf-claim{ font-size:1.18rem; font-weight:600; line-height:1.34; color:var(--ink); }
+        .bluf-claim b{ color:var(--deep); font-weight:800; }
+        .bluf-figrow{ display:flex; align-items:flex-end; gap:14px; margin-top:1rem; }
+        .bluf-fig{ font-size:3.4rem; font-weight:800; line-height:0.9; letter-spacing:-0.03em; color:var(--ink); }
+        .bluf-figlabel{ font-size:0.8rem; color:var(--muted); padding-bottom:0.4rem; }
+        .rbar{ position:relative; height:13px; border-radius:8px; background:var(--paper-2); margin-top:1.1rem; }
+        .rbar .fill{ position:absolute; inset:0; border-radius:8px; background:linear-gradient(90deg,var(--accent-soft),var(--accent),var(--accent-soft)); opacity:0.5; }
+        .rbar .mark{ position:absolute; top:-5px; width:3px; height:23px; border-radius:2px; background:var(--deep); }
+        .rscale{ display:flex; justify-content:space-between; font-size:0.72rem; color:var(--muted); margin-top:6px; }
+        .rcap{ font-size:0.85rem; color:var(--ink-2); margin-top:0.6rem; } .rcap b{ color:var(--accent-d); }
+        .rfreq{ font-size:0.79rem; color:var(--muted); margin-top:3px; }
+        .bluf-side{ background:linear-gradient(160deg,var(--deep),#6e6499 135%); color:#fff; padding:1.5rem; display:flex; flex-direction:column; gap:14px; }
+        .bluf-side .lbl{ font-size:0.66rem; text-transform:uppercase; letter-spacing:0.13em; color:var(--accent-2); font-weight:700; }
+        .bluf-side .txt{ font-size:0.9rem; line-height:1.45; margin-top:5px; color:rgba(255,255,255,0.94); } .bluf-side .txt b{ color:#fff; }
+        .bluf-pills{ display:flex; gap:6px; flex-wrap:wrap; margin-top:9px; }
+        .bpill{ font-size:0.72rem; padding:3px 9px; border-radius:999px; background:rgba(255,255,255,0.16); color:#fff; font-weight:600; }
+        .bluf-grade{ margin-top:auto; padding-top:12px; border-top:1px solid rgba(255,255,255,0.16); display:flex; align-items:center; gap:10px; }
+        .gchip{ font-size:1.4rem; font-weight:800; color:#fff; width:44px; height:44px; border-radius:11px; display:grid; place-items:center; }
+        .gtxt{ font-size:0.8rem; color:rgba(255,255,255,0.86); }
 
         /* ---- kpi cards ---- */
-        .kpi{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:1.05rem 1.2rem 1.1rem;
-          box-shadow:0 1px 2px rgba(16,40,30,0.05); height:100%; }
-        .kpi-label{ font-size:0.78rem; color:var(--muted); font-weight:500; margin:0 0 0.4rem; }
-        .kpi-val{ font-size:1.85rem; font-weight:700; color:var(--ink); line-height:1.05; letter-spacing:-0.02em; }
-        .kpi-chip{ display:inline-block; margin-top:0.6rem; font-size:0.73rem; font-weight:600; padding:0.2rem 0.6rem; border-radius:999px; background:var(--mint); color:#0a5a3f; }
-        .kpi-chip.warn{ background:#fdeedd; color:#b5500a; }
-        .kpi-chip.bad{ background:#fbe3e3; color:#b3231f; }
+        .kpi{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:1rem 1.15rem;
+          box-shadow:var(--shadow); height:100%; }
+        .kpi-label{ font-size:0.76rem; color:var(--muted); font-weight:600; margin:0 0 0.35rem; }
+        .kpi-val{ font-size:1.65rem; font-weight:800; color:var(--ink); line-height:1.05; letter-spacing:-0.02em; }
+        .kpi-chip{ display:inline-flex; gap:5px; align-items:center; margin-top:0.55rem; font-size:0.72rem; font-weight:700; padding:0.2rem 0.55rem; border-radius:999px; background:var(--mint); color:var(--accent-d); }
+        .kpi-chip.good{ background:var(--good-bg); color:var(--good); }
+        .kpi-chip.warn{ background:var(--watch-bg); color:var(--watch); }
+        .kpi-chip.bad{ background:var(--act-bg); color:var(--act); }
 
-        /* ---- chart card frame ---- */
+        /* ---- bullet-strip ratio card ---- */
+        .bul{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:0.95rem 1.1rem; box-shadow:var(--shadow); height:100%; }
+        .bul-name{ font-size:0.8rem; font-weight:600; color:var(--ink-2); }
+        .bul-val{ font-size:1.55rem; font-weight:800; color:var(--ink); letter-spacing:-0.02em; line-height:1.1; }
+        .bul-track{ position:relative; height:9px; border-radius:5px; background:var(--paper-2); margin:0.55rem 0 0.5rem; overflow:hidden; }
+        .bul-band{ position:absolute; top:0; bottom:0; background:var(--good-bg); }
+        .bul-bar{ position:absolute; top:1.5px; bottom:1.5px; left:0; border-radius:4px; }
+        .bul-tgt{ position:absolute; top:-3px; width:2px; height:15px; background:var(--ink); }
+        .bul-foot{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+        .bul-meta{ font-size:0.71rem; color:var(--muted); margin-top:0.35rem; }
+        .status{ display:inline-flex; gap:5px; align-items:center; font-size:0.71rem; font-weight:700; padding:0.15rem 0.55rem; border-radius:999px; }
+        .status.good{ color:var(--good); background:var(--good-bg); }
+        .status.warn{ color:var(--watch); background:var(--watch-bg); }
+        .status.bad{ color:var(--act); background:var(--act-bg); }
+
+        /* ---- chart card frame + metrics + caption + table ---- */
         [data-testid="stVerticalBlockBorderWrapper"]{ background:var(--card); border:1px solid var(--line) !important;
-          border-radius:16px; box-shadow:0 1px 2px rgba(16,40,30,0.05); padding:0.5rem 0.7rem; }
-
-        /* ---- native metrics (scenarios tab) ---- */
+          border-radius:16px; box-shadow:var(--shadow); padding:0.6rem 0.9rem; }
         [data-testid="stMetric"]{ background:var(--card); border:1px solid var(--line); border-radius:14px;
-          padding:0.9rem 1.05rem; box-shadow:0 1px 2px rgba(16,40,30,0.05); }
-        [data-testid="stMetricLabel"] p{ font-size:0.74rem !important; color:var(--muted) !important; font-weight:500; }
-        [data-testid="stMetricValue"]{ font-weight:700; color:var(--ink); font-size:1.55rem; }
-
-        /* ---- misc ---- */
+          padding:0.9rem 1.05rem; box-shadow:var(--shadow); }
+        [data-testid="stMetricLabel"] p{ font-size:0.74rem !important; color:var(--muted) !important; font-weight:600; }
+        [data-testid="stMetricValue"]{ font-weight:800; color:var(--ink); font-size:1.5rem; }
         [data-testid="stCaptionContainer"] p{ color:var(--muted) !important; font-size:0.8rem; }
         [data-testid="stDataFrame"]{ border:1px solid var(--line); border-radius:12px; overflow:hidden; }
         hr{ border-color:var(--line); }
-        ::selection{ background:rgba(9,117,86,0.18); }
+        ::selection{ background:rgba(137,126,176,0.22); }
+
+        /* ---- portfolio-set option cards ---- */
+        .opt{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:0.9rem; box-shadow:var(--shadow); height:100%; position:relative; }
+        .opt.reco{ border-color:var(--rule); }
+        .opt .tag{ position:absolute; top:-9px; left:12px; font-size:0.57rem; letter-spacing:0.08em; font-weight:800; text-transform:uppercase; background:var(--rule); color:#fff; padding:2px 7px; border-radius:5px; }
+        .opt .onm{ font-size:0.92rem; font-weight:800; color:var(--ink); }
+        .opt .odesc{ font-size:0.72rem; color:var(--muted); line-height:1.34; margin:3px 0 9px; min-height:3.5em; }
+        .opt .orow{ display:flex; justify-content:space-between; font-size:0.74rem; padding:3px 0; border-top:1px solid var(--line); }
+        .opt .orow .l{ color:var(--muted); } .opt .orow .v{ font-weight:700; color:var(--ink); font-variant-numeric:tabular-nums; }
+        .opt .orow .v.good{ color:var(--good); } .opt .orow .v.bad{ color:var(--act); }
+
+        /* ---- what-if delta cards ---- */
+        .dlt{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:0.85rem 1rem; box-shadow:var(--shadow); height:100%; }
+        .dlt-lbl{ font-size:0.74rem; color:var(--muted); font-weight:600; }
+        .dlt-val{ font-size:1.35rem; font-weight:800; color:var(--ink); margin-top:2px; }
+        .dlt-chg{ font-size:0.74rem; font-weight:700; margin-top:3px; }
+        .dlt-chg.good{ color:var(--good); } .dlt-chg.bad{ color:var(--act); } .dlt-chg.flat{ color:var(--muted-2); }
+        .dlt-chan{ font-size:0.62rem; text-transform:uppercase; letter-spacing:0.07em; color:var(--muted-2); font-weight:700; margin-top:2px; }
+
+        /* ---- provenance footer + primary buttons ---- */
+        .provfoot{ border-top:1px solid var(--line-2); margin-top:1.4rem; padding-top:0.8rem; font-size:0.73rem; color:var(--muted); display:flex; gap:14px; flex-wrap:wrap; }
+        .provfoot b{ color:var(--ink-2); }
+        .stButton > button[kind="primary"]{ background:var(--accent); border-color:var(--accent); }
+        .stButton > button[kind="primary"]:hover{ background:var(--accent-d); border-color:var(--accent-d); }
         </style>
         """,
         unsafe_allow_html=True,
@@ -347,8 +468,8 @@ def _sidebar_brand(st) -> None:
 
 # Traffic-light colours for service grades and hazard series (legibility beats
 # brand restraint for a risk read-out; this is the Mitcham dashboard, not SCA).
-GRADE_COLORS = {"A": "#1a7a3a", "B": "#6bbf59", "C": "#f0b400", "D": "#e8590c", "F": "#d6212b"}
-HAZARD_COLORS = {"heat": "#e8590c", "flood": "#1f77b4", "bushfire": "#b5170f"}
+GRADE_COLORS = {"A": "#3f8a6b", "B": "#3f8a6b", "C": "#7a9a5e", "D": "#b07a12", "F": "#c0603a"}
+HAZARD_COLORS = {"heat": "#cf7233", "flood": "#9a3b2e", "bushfire": "#6c2742"}
 _MAP_CENTER = {"lat": -35.005, "lon": 138.625}
 
 
@@ -372,26 +493,228 @@ def _kpi_card(st, label: str, value: str, chip: str | None = None, tone: str = "
     )
 
 
+_STATUS_GLYPH = {"good": ("good", "✓"), "warn": ("warn", "!"), "bad": ("bad", "✕")}
+
+
+def _bullet_card(st, name, value_disp, value_pct, band, max_scale, target_pct,
+                 status, word, meta) -> None:
+    """A regulated-ratio bullet strip: value bar + shaded target band + target
+    marker + a status chip (glyph + word, colour-blind-safe) + a one-line meta."""
+    cls, glyph = _STATUS_GLYPH.get(status, ("", "•"))
+    color = {"good": GOOD, "warn": WATCH, "bad": ACT}.get(status, ACCENT)
+    lo, hi = band
+    st.markdown(
+        f'<div class="bul"><div class="bul-name">{name}</div>'
+        f'<div class="bul-val">{value_disp}</div>'
+        f'<div class="bul-track">'
+        f'<div class="bul-band" style="left:{lo / max_scale * 100:.0f}%;width:{(hi - lo) / max_scale * 100:.0f}%"></div>'
+        f'<div class="bul-bar" style="width:{min(100.0, value_pct / max_scale * 100):.0f}%;background:{color}"></div>'
+        f'<div class="bul-tgt" style="left:{target_pct / max_scale * 100:.0f}%"></div></div>'
+        f'<div class="bul-foot"><span class="status {cls}">{glyph} {word}</span></div>'
+        f'<div class="bul-meta">{meta}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _hero_card(st, headline: dict, scenario: str, budget: float, grade: str | None, horizon: int) -> None:
-    """The green gradient feature card carrying the headline unfunded-gap figure."""
-    band = f"{_fmt_money(headline['gap_p05'])} – {_fmt_money(headline['gap_p95'])}"
-    grade_pill = f'<span class="pill gold">Grade {grade}</span>' if grade else ""
+    """BLUF hero: the headline gap as one number, with a designed p05–p95 honesty
+    range and a plain-English read — the visible leapfrog over a single-line forecast."""
+    lo, mid, hi = headline["gap_p05"], headline["gap_p50"], headline["gap_p95"]
+    pos = (mid - lo) / (hi - lo) * 100 if hi > lo else 50.0
+    pos = max(4.0, min(96.0, pos))
+    grade_color = GRADE_COLORS.get(grade or "", ACCENT)
+    grade_num = GRADE_NUMBER.get(grade or "", grade)
+    grade_block = (
+        f'<div class="bluf-grade"><div class="gchip" style="background:{grade_color}">{grade_num}</div>'
+        f'<div class="gtxt"><b style="color:#fff">Portfolio grade {grade_num} of 5.</b><br>'
+        "The funded programme below is what closes the gap.</div></div>"
+    ) if grade else ""
     st.markdown(
         f"""
-        <div class="hero-card">
-          <p class="hc-label">{horizon}-year unfunded renewal gap</p>
-          <div class="hc-val">{_fmt_money(headline['gap_p50'])}</div>
-          <p class="hc-sub">Renewal demand {_fmt_money(headline['demand_p50'])} against funded
-          capacity {_fmt_money(headline['capacity'])} &middot; uncertainty band {band}</p>
-          <div class="hc-pills">
-            <span class="pill">{SCENARIO_LABELS.get(scenario, scenario)}</span>
-            <span class="pill">{_fmt_money(budget)} / year</span>
-            {grade_pill}
+        <div class="bluf">
+          <div class="bluf-main">
+            <p class="bluf-claim">Mitcham's buildings carry a <b>{_fmt_money(mid)} renewal shortfall</b>
+              over {horizon} years at the current {_fmt_money(budget)} a year.</p>
+            <div class="bluf-figrow">
+              <div class="bluf-fig">{_fmt_money(mid)}</div>
+              <div class="bluf-figlabel">unfunded renewal gap<br>{horizon} years &middot; central estimate</div>
+            </div>
+            <div class="rbar"><div class="fill"></div><div class="mark" style="left:{pos:.0f}%"></div></div>
+            <div class="rscale"><span>{_fmt_money(lo)}</span><span>central {_fmt_money(mid)}</span><span>{_fmt_money(hi)}</span></div>
+            <p class="rcap">We're <b>90% sure</b> the gap sits between <b>{_fmt_money(lo)} and {_fmt_money(hi)}</b>.</p>
+            <p class="rfreq">In about 19 of 20 modelled futures the shortfall stays under {_fmt_money(hi)} —
+              the range behind the headline, not a single line.</p>
           </div>
+          <aside class="bluf-side">
+            <div>
+              <div class="lbl">Under this strategy</div>
+              <p class="txt">Renewal demand <b>{_fmt_money(headline['demand_p50'])}</b> against funded
+                capacity <b>{_fmt_money(headline['capacity'])}</b> over {horizon} years.</p>
+              <div class="bluf-pills">
+                <span class="bpill">{SCENARIO_LABELS.get(scenario, scenario)}</span>
+                <span class="bpill">{_fmt_money(budget)} / yr</span>
+              </div>
+            </div>
+            {grade_block}
+          </aside>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def _financial_indicators_strip(st, go, fi) -> None:
+    """Four-card SA local-government asset-ratio strip for THE CALL.
+
+    ARFR (mandated, two-sided band), ACR (one-sided — high is healthy), ASR
+    (national depreciation cross-check), and the renewal backlog. Each card's RAG
+    chip is driven by the matching status helper in ``metrics``.
+    """
+    if not fi:
+        return
+    st.markdown('<div style="height:1.0rem"></div>', unsafe_allow_html=True)
+    st.markdown("#### Financial sustainability indicators")
+    st.caption(
+        "SA local-government asset ratios derived from the renewal model. "
+        "ARFR is the mandated I&AMP-based indicator (FSIP No. 9 target "
+        "80–120%, rolling 100%); ASR is the national depreciation-based "
+        "cross-check.")
+    arfr, acr, asr, backlog = fi.get("arfr"), fi.get("acr"), fi.get("asr"), fi.get("backlog")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        s = band_status(arfr, ARFR_BAND)
+        _bullet_card(st, "Asset Renewal Funding Ratio",
+                     f"{arfr * 100:.0f}%" if arfr is not None else "—",
+                     (arfr if arfr is not None else 0) * 100,
+                     (80, 120), 140, 100, s,
+                     {"good": "In band", "warn": "Watch", "bad": "Below floor"}.get(s, "—"),
+                     "target 80–120% · rolling 100%")
+    with c2:
+        s = acr_status(acr)   # one-sided; high is NOT bad
+        _bullet_card(st, "Asset Consumption Ratio",
+                     f"{acr * 100:.0f}%" if acr is not None else "—",
+                     (acr if acr is not None else 0) * 100,
+                     (40, 100), 100, 40, s,
+                     {"good": "Healthy", "warn": "Watch", "bad": "Low"}.get(s, "—"),
+                     "share of value remaining — higher = younger stock")
+    with c3:
+        s = band_status(asr, ASR_BAND)
+        _bullet_card(st, "Asset Sustainability Ratio",
+                     f"{asr * 100:.0f}%" if asr is not None else "—", (asr or 0) * 100,
+                     (90, 110), 140, 100, s,
+                     {"good": "On track", "warn": "Watch", "bad": "Below"}.get(s, "—"),
+                     "scheduled renewal vs depreciation · target 90–110%")
+    with c4:
+        s = backlog_status(backlog)
+        _bullet_card(st, "Renewal backlog",
+                     f"{backlog * 100:.0f}%" if backlog is not None else "—", (backlog or 0) * 100,
+                     (0, 5), 60, 5, s,
+                     {"good": "Low", "warn": "Watch", "bad": "High"}.get(s, "—"),
+                     "% of value past target · target <5%")
+
+    with st.expander("How these ratios are derived (method notes)", expanded=False):
+        st.markdown(
+            "- **Straight-line depreciation** assumption for ACR/ASR (age vs useful "
+            "life); calibratable if Mitcham shares valuation history.\n"
+            "- **ACR** is a straight-line age-vs-life proxy (the demo register holds "
+            "no independent valuation) — deliberately different from the convex, "
+            "sampled condition curve used for renewal *need*. A young portfolio reads "
+            "ACR ~95–100%, which is **healthy, not a red flag** (hence the one-sided "
+            "status).\n"
+            "- **ASR is works-based**: the numerator is the optimiser's *scheduled* "
+            "renewal (`opt_summary`), not the budget cap — a budget-based ASR is "
+            "circular (`annual_budget ÷ depreciation`). Read it as scheduled renewal "
+            "vs depreciation.\n"
+            "- **ARFR numerator** = funded capacity (`annual_budget × horizon`) — "
+            "committed funding, not optimiser spend. The **denominator is modelled "
+            "renewal need**: where a council's AMP under-proposes against need, its "
+            "reported ARFR can look healthy while this need-based ARFR reveals the true "
+            "gap. The corridor axis is **cumulative-to-date** ARFR, not the trailing "
+            "rolling average FSIP No. 9 prescribes.\n"
+            "- **Sources:** definitions/targets → LGA SA FSIP No. 9 and the Model "
+            "Financial Statements (Financial Indicators note); council-specific "
+            "commentary → ESCOSA, which has a legislated advisory role on council "
+            "financial sustainability following the 2021 LG reforms. Decision support, "
+            "not authority.")
+
+
+def _compliance_corridor(st, go, comp, minb) -> None:
+    """Rolling-ARFR compliance corridor: p50 + p95 against the 80–120% band.
+
+    Above the chart, the compliance verdict and the minimum-sustainable-budget
+    cards (average-100% and never-below-80%, p50 and p95) from ``minb``.
+    """
+    if not comp:
+        return
+    lo, hi = comp["band"]
+
+    # The cumulative ARFR ramps up from a low early value (year-1 budget against
+    # the first lumpy need) toward its endpoint — the headline ARFR (cumulative
+    # funding / cumulative need over the whole plan). Judge compliance on that
+    # MATURE endpoint, not the ramp: a "below floor in 2026" reading is an artefact
+    # of the cumulative measure, not under-funding.
+    years, p50 = comp["years"], comp["arfr_p50"]
+    final = next((v for v in reversed(p50) if v is not None), None)
+    last_year = years[-1] if years else None
+    if final is None:
+        pass
+    elif final < lo:
+        st.warning(
+            f"By {last_year} cumulative ARFR reaches only {final * 100:.0f}% — below "
+            f"the {lo * 100:.0f}% floor. Renewal is under-funded across the plan.")
+    elif final > hi:
+        st.info(
+            f"By {last_year} cumulative ARFR reaches {final * 100:.0f}% — above the "
+            f"{hi * 100:.0f}% band. Funded capacity exceeds modelled renewal need at "
+            f"this budget and scenario.")
+    else:
+        st.success(
+            f"By {last_year} cumulative ARFR reaches {final * 100:.0f}% — within the "
+            f"{lo * 100:.0f}–{hi * 100:.0f}% band.")
+
+    if minb:
+        p50 = minb.get("p50", {})
+        p95 = minb.get("p95", {})
+        b1, b2 = st.columns(2)
+        with b1:
+            _kpi_card(st, "Budget to average 100%",
+                      f"{_fmt_money(p50.get('target_budget', 0.0))}/yr",
+                      f"p95 contingency {_fmt_money(p95.get('target_budget', 0.0))}/yr")
+        with b2:
+            _kpi_card(st, "Budget to never drop below 80%",
+                      f"{_fmt_money(p50.get('floor_budget', 0.0))}/yr",
+                      f"p95 contingency {_fmt_money(p95.get('floor_budget', 0.0))}/yr",
+                      tone="warn")
+
+    fig = go.Figure()
+    # shaded 80–120% compliance band + 100% target line
+    fig.add_hrect(y0=lo * 100, y1=hi * 100, fillcolor="rgba(26,122,58,0.10)", line_width=0)
+    fig.add_hline(y=100, line=dict(color="#1a7a3a", width=1, dash="dash"),
+                  annotation_text="target 100%", annotation_position="top left")
+    fig.add_trace(go.Scatter(
+        x=comp["years"], y=[v * 100 if v else None for v in comp["arfr_p50"]],
+        name="ARFR (central)", line=dict(color=BRIGHT_GREEN, width=3)))
+    fig.add_trace(go.Scatter(
+        x=comp["years"], y=[v * 100 if v else None for v in comp["arfr_p95"]],
+        name="ARFR (high demand, p95)", line=dict(color="#e8590c", width=2, dash="dot")))
+    # Y-range adapts to the data: a 160% floor keeps the 80–120% band well-framed
+    # at normal budgets, but it expands when ARFR climbs higher (funded capacity
+    # outpacing modelled need at high budgets) so the lines are never clipped.
+    vals = [v * 100 for v in (comp["arfr_p50"] + comp["arfr_p95"]) if v is not None]
+    ymax = max(160.0, (max(vals) if vals else 0.0) * 1.1)
+    fig.update_layout(
+        margin=dict(l=8, r=8, t=8, b=8), height=320,
+        yaxis=dict(title="Asset Renewal Funding Ratio (%)", ticksuffix="%",
+                   range=[0, ymax]),
+        legend=dict(orientation="h", y=-0.2))
+    st.plotly_chart(fig, width="stretch")
+    st.caption(
+        "Cumulative-to-date ARFR (cumulative funding ÷ cumulative renewal need) at the "
+        "central (p50) and high-demand (p95) paths, against the regulated 80–120% band. "
+        "The line ramps up from a low early value toward its endpoint — the headline "
+        "ARFR for the plan — so the verdict above reads the mature endpoint, not the "
+        "ramp. The p50–p95 gap is the contingency for demand uncertainty. Decision "
+        "support, not authority.")
 
 
 def _tab_overview(st, go, pd, panels: dict, scenario: str, budget: float, horizon: int) -> None:
@@ -670,6 +993,15 @@ def _deferral_panel(st, conn, scenario: str, budget: float, horizon: int) -> Non
     fig.add_annotation(
         x=budget / 1_000_000, y=cur_gap, text=f"you are here · {_fmt_money(cur_gap)} unfunded",
         showarrow=True, arrowhead=2, ax=50, ay=-40, font=dict(size=12, color="#01310c"))
+    # Minimum sustainable (never-below-80%) flat budget — the compliant floor on
+    # the slider the user already drives.
+    minb = minimum_sustainable_budget(conn, scenario=scenario, horizon=horizon)
+    floor_budget = minb.get("p50", {}).get("floor_budget", 0.0)
+    if floor_budget > 0:
+        fig.add_vline(
+            x=floor_budget / 1_000_000, line=dict(color="#b8930a", width=2, dash="dot"),
+            annotation_text=f"never below 80% · {_fmt_money(floor_budget)}/yr",
+            annotation_position="top right")
     fig.update_layout(
         margin=dict(l=8, r=8, t=8, b=8), height=320, showlegend=False,
         xaxis=dict(title="Annual renewal budget", tickprefix="$", ticksuffix="M"),
@@ -720,13 +1052,13 @@ def _tab_scenarios(st, px, pd, conn, panels: dict, scenario: str, budget: float,
     cdf = pd.DataFrame(rows, columns=["bid", "year", "cond"]).merge(coords, on="bid")
     fig = px.scatter_map(
         cdf, lat="lat", lon="lon", color="cond", size="value", animation_frame="year",
-        color_continuous_scale="RdYlGn_r", range_color=(1.0, 5.0), size_max=20,
+        color_continuous_scale=list(EMBERS), range_color=(1.0, 5.0), size_max=20,
         hover_name="name", zoom=10.4, center=_MAP_CENTER, map_style="carto-positron",
         height=560, labels={"cond": "condition"})
     fig.update_layout(margin=dict(l=0, r=0, t=8, b=0))
     st.plotly_chart(fig, width="stretch")
-    st.caption(f"Condition under {SCENARIO_LABELS.get(scenario, scenario)} — green (good) to red "
-               "(needs renewal). No intervention modelled: this is the do-nothing trajectory.")
+    st.caption(f"Condition under {SCENARIO_LABELS.get(scenario, scenario)} — pale (good) to deep "
+               "plum (needs renewal). No intervention modelled: this is the do-nothing trajectory.")
 
 
 def _tab_climate(st, go, conn, panels: dict, scenario: str) -> None:
@@ -767,7 +1099,7 @@ def _tab_climate(st, go, conn, panels: dict, scenario: str) -> None:
             lat=mdf["lat"], lon=mdf["lon"], mode="markers",
             marker=dict(
                 size=(mdf["value"] / (float(mdf["value"].max()) or 1.0) * 20 + 6),
-                color=mdf["ex"], colorscale="YlOrRd", cmin=0.0, cmax=1.0,
+                color=mdf["ex"], colorscale=EMBERS_SCALE, cmin=0.0, cmax=1.0,
                 showscale=True, colorbar_title="exposure"),
             text=mdf["name"], hoverinfo="text"))
         fig2.update_layout(
@@ -794,6 +1126,17 @@ def _tab_call(st, go, pd, conn, panels: dict, scenario: str, budget: float, hori
     n_b = card["n_buildings"] if card else 0
     backlog = card["grade_count"]["F"] if card else 0
 
+    st.markdown(
+        '<div class="demo-note"><span class="lead">Demonstration only.</span> '
+        "This dashboard runs on data <b>synthesised from public City of Mitcham "
+        "figures</b> — not the council's actual asset register — with climate inputs "
+        "<b>calibrated to be representative of</b> NARCliM / CSIRO / BoM ranges, not a "
+        "site-specific data pull. It is <b>decision support, not decision authority</b>: "
+        "the renewal-timing assumptions require chartered-engineer sign-off before any "
+        "real capital decision. Prepared by Social Capital Advisory.</div>",
+        unsafe_allow_html=True,
+    )
+
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         _kpi_card(st, f"Renewal demand · {horizon} yr",
@@ -812,6 +1155,7 @@ def _tab_call(st, go, pd, conn, panels: dict, scenario: str, budget: float, hori
 
     st.markdown('<div style="height:0.9rem"></div>', unsafe_allow_html=True)
     _hero_card(st, headline, scenario, budget, grade, horizon)
+    _financial_indicators_strip(st, go, panels.get("financial_indicators"))
 
     funded = funded_programme(conn, horizon=horizon)
     near_term = sorted(
@@ -938,8 +1282,8 @@ def _render_building_card(st, go, pd, card: dict) -> None:
             _kpi_card(st, "Replacement value", _fmt_money(card['value']))
         with k2:
             _kpi_card(st, "Current grade",
-                      condition_grade(card['condition_now']),
-                      f"condition {card['condition_now']:.2f}")
+                      str(condition_grade_number(card['condition_now'])),
+                      f"1–5 · condition {card['condition_now']:.2f}")
         with k3:
             _kpi_card(st, "Criticality", f"{card['criticality']:.2f}",
                       "1.0 = highest service criticality")
@@ -1068,8 +1412,9 @@ def _tab_portfolio(st, go, px, pd, conn, panels: dict, scenario: str, horizon: i
 
     vmax = float(bdf["value"].max()) or 1.0
     sizes = (bdf["value"] / vmax * 22 + 7).tolist()
+    bdf["grade_num"] = bdf["grade"].map(GRADE_NUMBER)
     hover = [
-        f"{r['name']} ({r['suburb']})<br>Grade {r['grade']} · {_fmt_money(r['value'])}"
+        f"{r['name']} ({r['suburb']})<br>Grade {r['grade_num']} · {_fmt_money(r['value'])}"
         + (f"<br>Renewal {int(r['renew_year'])}" if pd.notna(r.get("renew_year")) else "<br>Deferred this horizon")
         for _i, r in bdf.iterrows()
     ]
@@ -1083,11 +1428,11 @@ def _tab_portfolio(st, go, px, pd, conn, panels: dict, scenario: str, horizon: i
                 lat=has["lat"], lon=has["lon"], mode="markers",
                 marker=dict(
                     size=(has["value"] / vmax * 22 + 7),
-                    color=has["renew_year"], colorscale="Viridis",
+                    color=has["renew_year"], colorscale=LAVENDER_SCALE,
                     cmin=CURRENT_YEAR, cmax=CURRENT_YEAR + horizon - 1,
                     showscale=True, colorbar=dict(title="Renewal year")),
                 text=[
-                    f"{r['name']} ({r['suburb']})<br>Grade {r['grade']} · "
+                    f"{r['name']} ({r['suburb']})<br>Grade {r['grade_num']} · "
                     f"{_fmt_money(r['value'])}<br>Renewal {int(r['renew_year'])}"
                     for _i, r in has.iterrows()],
                 hoverinfo="text", name="funded"))
@@ -1098,11 +1443,11 @@ def _tab_portfolio(st, go, px, pd, conn, panels: dict, scenario: str, horizon: i
                     size=(none["value"] / vmax * 22 + 7),
                     color="#9aa3a8", opacity=0.55),
                 text=[
-                    f"{r['name']} ({r['suburb']})<br>Grade {r['grade']} · "
+                    f"{r['name']} ({r['suburb']})<br>Grade {r['grade_num']} · "
                     f"{_fmt_money(r['value'])}<br>Deferred this horizon"
                     for _i, r in none.iterrows()],
                 hoverinfo="text", name="deferred"))
-        caption = ("Coloured dots: optimiser's renewal year (dark = early, bright = late). "
+        caption = ("Coloured dots: optimiser's renewal year (deep lavender = early, pale = late). "
                    "Grey dots: buildings deferred beyond the horizon. Dot size = replacement value.")
     elif shading == "Current grade":
         bdf["color_hex"] = bdf["grade"].map(GRADE_COLORS)
@@ -1110,17 +1455,17 @@ def _tab_portfolio(st, go, px, pd, conn, panels: dict, scenario: str, horizon: i
             lat=bdf["lat"], lon=bdf["lon"], mode="markers",
             marker=dict(size=sizes, color=bdf["color_hex"]),
             text=hover, hoverinfo="text", name="buildings"))
-        caption = ("Dots coloured by today's service grade (green A → red F). "
-                   "Dot size = replacement value.")
+        caption = ("Dots coloured by today's service grade (1 green = near-new → "
+                   "5 terracotta = failed). Dot size = replacement value.")
     else:  # Climate exposure
         fig.add_trace(go.Scattermap(
             lat=bdf["lat"], lon=bdf["lon"], mode="markers",
             marker=dict(
                 size=sizes, color=bdf["climate_ex"],
-                colorscale="YlOrRd", cmin=0.0, cmax=1.0,
+                colorscale=EMBERS_SCALE, cmin=0.0, cmax=1.0,
                 showscale=True, colorbar=dict(title="Max hazard")),
             text=[
-                f"{r['name']} ({r['suburb']})<br>Grade {r['grade']} · "
+                f"{r['name']} ({r['suburb']})<br>Grade {r['grade_num']} · "
                 f"{_fmt_money(r['value'])}<br>Max hazard {r['climate_ex']:.2f}"
                 for _i, r in bdf.iterrows()],
             hoverinfo="text"))
@@ -1134,7 +1479,7 @@ def _tab_portfolio(st, go, px, pd, conn, panels: dict, scenario: str, horizon: i
     st.plotly_chart(fig, width="stretch")
     st.caption(caption)
 
-    st.markdown('<div style="height:1.0rem"></div>', unsafe_allow_html=True)
+    st.markdown('<div style="height:0.5rem"></div>', unsafe_allow_html=True)
     st.markdown("#### Inspect a building")
 
     name_to_bid = dict(zip(
@@ -1150,7 +1495,7 @@ def _tab_portfolio(st, go, px, pd, conn, panels: dict, scenario: str, horizon: i
     else:
         st.caption("Pick a building above to open its detail card.")
 
-    st.markdown('<div style="height:1.2rem"></div>', unsafe_allow_html=True)
+    st.markdown('<div style="height:0.6rem"></div>', unsafe_allow_html=True)
     cev = panels["climate"]
     if cev and cev["years"]:
         with st.container(border=True):
@@ -1171,6 +1516,40 @@ def _tab_portfolio(st, go, px, pd, conn, panels: dict, scenario: str, horizon: i
                 "Exposure = replacement value under rising hazard, not an actuarial loss.")
 
 
+def _optimiser_override_panel(
+    st, go, pd, conn, funded: list[dict], deferred: list[dict], spend: dict,
+    scenario: str, budget: float, horizon: int,
+) -> None:
+    """Unified 'Override the optimiser' tool — one panel, two directions.
+
+    **Defer** a building the optimiser funded (an instant present-value overlay,
+    no re-solve) or **bring forward** a deferred building into the plan (a real
+    constrained re-solve that shows which renewal gets pushed out). Both act on
+    the whole programme, so the panel sits below the Funded/Deferred tabs rather
+    than inside either one.
+    """
+    with st.expander(
+        "Override the optimiser — defer a funded building, or bring a deferred one forward",
+        expanded=False,
+    ):
+        st.caption(
+            "Two directions on the same programme. **Defer** pushes a funded "
+            "building later and prices the present-value consequence instantly "
+            "(no re-solve). **Bring forward** constrains the optimiser to renew a "
+            "deferred building and re-solves to show which renewal it bumps to "
+            "make room.")
+        mode = st.radio(
+            "Direction",
+            ["Defer a funded building", "Bring a deferred building forward"],
+            horizontal=True, label_visibility="collapsed",
+            key="plan_override_mode")
+        st.markdown('<div style="height:0.5rem"></div>', unsafe_allow_html=True)
+        if mode == "Defer a funded building":
+            _override_panel(st, go, pd, conn, funded, spend, scenario, budget, horizon)
+        else:
+            _force_in_panel(st, go, pd, conn, deferred, spend, scenario, budget, horizon)
+
+
 def _override_panel(
     st, go, pd, conn, funded: list[dict], spend: dict,
     scenario: str, budget: float, horizon: int,
@@ -1182,10 +1561,7 @@ def _override_panel(
     + escalation cost of leaving the asset un-renewed, additional years degraded,
     and a side-by-side spend-by-year chart so the budget impact is visible.
     """
-    with st.expander(
-        "What if you overrode the optimiser and deferred a building?",
-        expanded=False,
-    ):
+    with st.container():
         st.caption(
             "Pick one or more buildings from the funded programme to override. The "
             "dashboard computes the consequence without re-running the optimiser: the "
@@ -1307,10 +1683,7 @@ def _force_in_panel(
     explicit **Re-solve** button keeps Streamlit from re-running a 5–30 s solve
     on every interaction.
     """
-    with st.expander(
-        "Force a deferred building into the programme — and see what gets pushed out.",
-        expanded=False,
-    ):
+    with st.container():
         st.caption(
             "Pick one or more buildings from the deferred list and the optimiser "
             "re-runs with them constrained to renew within the horizon. It chooses "
@@ -1516,7 +1889,7 @@ def _force_in_panel(
         )
 
 
-def _tab_plan(st, go, px, pd, conn, scenario: str, budget: float, horizon: int) -> None:
+def _tab_plan(st, go, px, pd, conn, panels: dict, scenario: str, budget: float, horizon: int) -> None:
     """THE PLAN — the actionable renewal programme.
 
     Surfaces three layers of the programme so the user can act on it: total
@@ -1580,6 +1953,13 @@ def _tab_plan(st, go, px, pd, conn, scenario: str, budget: float, horizon: int) 
             "annual budget. Years above the line are oversubscribed; years below have headroom "
             "(the optimiser smooths against the per-year budget constraint).")
 
+    comp = panels.get("arfr_compliance")
+    if comp:
+        st.markdown('<div style="height:0.9rem"></div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown("**Asset Renewal Funding Ratio — staying inside the regulated corridor**")
+            _compliance_corridor(st, go, comp, panels.get("min_budget"))
+
     st.markdown('<div style="height:0.9rem"></div>', unsafe_allow_html=True)
 
     funded_tab, deferred_tab = st.tabs(
@@ -1602,7 +1982,8 @@ def _tab_plan(st, go, px, pd, conn, scenario: str, budget: float, horizon: int) 
                 st.markdown("**Funded programme — when each building is scheduled**")
                 st.caption(
                     "Each bar marks the year the optimiser commits to renew that "
-                    "building. Colour groups by suburb.")
+                    "building; colour groups nearby suburbs. Hover a bar for its "
+                    "suburb, cost and robustness — the table below lists them in full.")
                 gfig = px.timeline(
                     gdf, x_start="Start", x_end="End", y="Building",
                     color="Suburb", hover_data=["Cost", "Robust"])
@@ -1611,7 +1992,7 @@ def _tab_plan(st, go, px, pd, conn, scenario: str, budget: float, horizon: int) 
                 gfig.update_layout(
                     margin=dict(l=8, r=8, t=8, b=8),
                     height=max(280, 26 * len(gdf)),
-                    legend=dict(title_text="Suburb", orientation="h", y=-0.12))
+                    showlegend=False)
                 st.plotly_chart(gfig, width="stretch")
 
             with st.container(border=True):
@@ -1620,7 +2001,7 @@ def _tab_plan(st, go, px, pd, conn, scenario: str, budget: float, horizon: int) 
                     {"Renewal year": int(f["renewal_year"]) if f["renewal_year"] else "—",
                      "Building": f["building"], "Suburb": f["suburb"] or "—",
                      "Asset class": f["asset_type"] or "—",
-                     "Current grade": condition_grade(float(f["condition_now"] or 1.0)),
+                     "Current grade": condition_grade_number(float(f["condition_now"] or 1.0)),
                      "Value": _fmt_money(f["value"] or 0.0),
                      "Criticality": f"{float(f['criticality'] or 0.5):.2f}",
                      "Robust priority": "✓" if f["robust"] else "",
@@ -1629,12 +2010,10 @@ def _tab_plan(st, go, px, pd, conn, scenario: str, budget: float, horizon: int) 
                 ]
                 st.dataframe(pd.DataFrame(table_rows), width="stretch", hide_index=True)
                 st.caption(
-                    "Sortable. \"Robust priority ✓\" marks buildings the optimiser renews "
-                    "across nearly every simulated future — the schedule is least sensitive "
-                    "to the climate realisation drawn.")
-
-            st.markdown('<div style="height:1.0rem"></div>', unsafe_allow_html=True)
-            _override_panel(st, go, pd, conn, funded, spend, scenario, budget, horizon)
+                    "Sortable. Current grade is a 1–5 condition rating (1 = near-new, "
+                    "5 = failed / renewal backlog). \"Robust priority ✓\" marks buildings "
+                    "the optimiser renews across nearly every simulated future — the "
+                    "schedule is least sensitive to the climate realisation drawn.")
 
     with deferred_tab:
         if not deferred:
@@ -1652,7 +2031,7 @@ def _tab_plan(st, go, px, pd, conn, scenario: str, budget: float, horizon: int) 
                 rows.append({
                     "Building": d["building"], "Suburb": d["suburb"] or "—",
                     "Asset class": d["asset_type"] or "—",
-                    "Current grade": condition_grade(float(d["condition_now"] or 1.0)),
+                    "Current grade": condition_grade_number(float(d["condition_now"] or 1.0)),
                     "Value": _fmt_money(d["value"] or 0.0),
                     "Criticality": f"{float(d['criticality'] or 0.5):.2f}",
                     "Reaches intervention": (
@@ -1675,8 +2054,9 @@ def _tab_plan(st, go, px, pd, conn, scenario: str, budget: float, horizon: int) 
                     "Optimal-timing panel under THE TRADE-OFFS — and the per-building card on "
                     "THE PORTFOLIO once it ships (phase 3).")
 
-            st.markdown('<div style="height:1.0rem"></div>', unsafe_allow_html=True)
-            _force_in_panel(st, go, pd, conn, deferred, spend, scenario, budget, horizon)
+    st.markdown('<div style="height:1.2rem"></div>', unsafe_allow_html=True)
+    _optimiser_override_panel(
+        st, go, pd, conn, funded, deferred, spend, scenario, budget, horizon)
 
 
 def _tab_works(st, pd, panels: dict) -> None:
@@ -1705,6 +2085,826 @@ def _tab_works(st, pd, panels: dict) -> None:
         "components funded in the window; “robust priority” (✓) flags buildings the optimiser "
         "renews across nearly every simulated future, not just the central case.")
     st.dataframe(df, width="stretch", hide_index=True)
+
+
+# --------------------------------------------------------------------------- #
+# THE WHAT-IF — add a proposed / missing building, watch the picture move.
+# All recompute lands on a session shadow; the canonical DB is never written.
+# --------------------------------------------------------------------------- #
+
+# The buildings-fixture asset-type domain (S.4.2). Imported lazily so headless
+# mode never touches the fixture loader at import time.
+def _asset_types() -> list[str]:
+    from engine.ingest.mitcham_public import _load_fixture
+    return list(_load_fixture()["unit_rate_per_m2_by_type"].keys())
+
+
+def _suburbs(conn) -> list[str]:
+    """Distinct suburbs in the canonical register (for the proposal form)."""
+    rows = conn.execute(
+        "SELECT DISTINCT suburb FROM assets WHERE council = 'mitcham' "
+        "AND suburb IS NOT NULL ORDER BY suburb"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _suburb_centroid(conn, suburb: str) -> tuple[float | None, float | None]:
+    """Mean lat/lon of existing assets in ``suburb`` (the map prefill, S.4.2)."""
+    row = conn.execute(
+        "SELECT AVG(lat), AVG(lon) FROM assets WHERE council = 'mitcham' AND suburb = ?",
+        [suburb],
+    ).fetchone()
+    if not row or row[0] is None:
+        return None, None
+    return float(row[0]), float(row[1])
+
+
+def _next_proposal_bid(proposals: list[dict], status: str) -> str:
+    """Mint the next ``pNNNN`` / ``uNNNN`` building id for a new proposal (S.3.4)."""
+    prefix = "p" if status == "proposed" else "u"
+    used = {
+        int(p["building_id"][1:])
+        for p in proposals
+        if p["building_id"].startswith(prefix) and p["building_id"][1:].isdigit()
+    }
+    n = 1
+    while n in used:
+        n += 1
+    return f"{prefix}{n:04d}"
+
+
+def _whatif_banner(st, n_enabled: int) -> None:
+    """Persistent gold-bordered hypothetical banner + context pill (S.4.5)."""
+    st.markdown(
+        f"""
+        <div style="border:2px solid {GOLD}; background:#fffdf0; border-radius:14px;
+             padding:0.85rem 1.1rem; display:flex; justify-content:space-between;
+             align-items:center; gap:1rem; margin:0.2rem 0 1.1rem;">
+          <div style="font-weight:600; color:{CHARCOAL};">
+            🧪 Hypothetical workspace — <b>nothing here is saved</b>. Every recompute
+            runs on a throwaway copy; the council register is never touched.
+          </div>
+          <span style="background:{GOLD}; color:{CHARCOAL}; border-radius:999px;
+                padding:0.3rem 0.8rem; font-size:0.8rem; font-weight:700; white-space:nowrap;">
+            WHAT-IF · {n_enabled} proposal{'s' if n_enabled != 1 else ''}
+          </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _whatif_explainer(st) -> None:
+    """Dismissible, context-aware honesty-thesis explainer (S.4.7, S.1.2).
+
+    No-op once the session opts out, or when there is no pending add/remove
+    event. Renders from a pending-event slot in ``session_state``; a Dismiss
+    button clears the event and a "Don't show these tips again" checkbox
+    suppresses it for the session. Never blocks interaction.
+    """
+    if st.session_state.get("_whatif_tips_off"):
+        return
+    ev = st.session_state.get("_whatif_last_event")
+    if not ev:
+        return
+    if ev["event"] == "add" and ev["status"] == "proposed":
+        msg = (
+            f"💡 **{ev['label']}** is a *proposed build* — it flatters the near-term "
+            "ratios (ACR ↑, backlog diluted, grade ↑) but adds depreciation now and "
+            "contributes **nothing** to the 25-year ARFR. Its renewal need lands ~20 yr "
+            "after commission (HVAC). Watch the **50-year corridor** and the "
+            "**net-new-liability badge** below."
+        )
+    elif ev["event"] == "add":
+        msg = (
+            f"💡 **{ev['label']}** is a *missing asset* — registering it surfaces need "
+            "that under-registration was hiding: ACR ↓, backlog ↑, ARFR pulled toward "
+            "(or through) the 80% floor. This is the honest gap."
+        )
+    else:
+        msg = (
+            f"💡 Removed **{ev['label']}** — the diff now reflects the remaining "
+            f"{ev['n_enabled']} enabled proposal(s)."
+        )
+    with st.container(border=True):
+        st.markdown(msg)
+        c1, c2 = st.columns([1, 3])
+        if c1.button("Dismiss", key="_whatif_tip_dismiss"):
+            st.session_state["_whatif_last_event"] = None
+            st.rerun()
+        c2.checkbox("Don't show these tips again", key="_whatif_tips_off")
+
+
+def _proposal_form(st, conn, next_bid_proposed: str, next_bid_missing: str):
+    """Building-level proposal form -> a proposal dict (or None) (S.4.2)."""
+    from engine.ingest.proposed import build_proposed_building, min_component_life, unit_rate_for
+
+    try:
+        from pydantic import ValidationError
+    except Exception:  # pragma: no cover - pydantic is a hard dep
+        ValidationError = ValueError  # type: ignore
+
+    suburbs = _suburbs(conn) or ["Mitcham"]
+    asset_types = _asset_types()
+
+    with st.expander("➕ Add a proposed or missing building", expanded=True):
+        with st.form("whatif_add", clear_on_submit=False):
+            status = st.radio(
+                "This building is", ["proposed", "missing"], horizontal=True,
+                format_func=lambda s: {
+                    "proposed": "Proposed (new build)",
+                    "missing": "Missing from the register",
+                }[s],
+            )
+            next_bid = next_bid_proposed if status == "proposed" else next_bid_missing
+            # Name leads full-width; the short fields pair up in balanced two-column
+            # rows so neither column leaves a tall void beside the other.
+            name = st.text_input("Name", value="Proposed —")
+            r1c1, r1c2 = st.columns(2)
+            with r1c1:
+                atype = st.selectbox("Asset type", asset_types)
+            with r1c2:
+                suburb = st.selectbox("Suburb", suburbs)
+            r2c1, r2c2 = st.columns(2)
+            with r2c1:
+                if status == "proposed":
+                    year = st.number_input(
+                        "Commission year", CURRENT_YEAR, 2051, CURRENT_YEAR + 2, step=1)
+                else:
+                    year = st.number_input(
+                        "Install year", 1950, CURRENT_YEAR, 1995, step=1)
+            with r2c2:
+                crit = st.slider("Criticality", 0.0, 1.0, 0.6, 0.05)
+            if status == "proposed":
+                cond = 1.0
+            else:
+                cond = st.slider(
+                    "Current condition (1 new – 5 failed)", 1.0, 5.0, 3.5, 0.1)
+            mode = st.radio("Value", ["Lump sum", "Footprint × rate"], horizontal=True)
+            grc_total = None
+            extent = None
+            if mode == "Lump sum":
+                grc_total = 1_000.0 * st.number_input(
+                    "Replacement cost ($k)", 100.0, 50_000.0, 4_000.0, 100.0)
+            else:
+                fa, rc = st.columns(2)
+                extent = fa.number_input("Footprint (m²)", 50.0, 20_000.0, 1_200.0, 50.0)
+                try:
+                    default_rate = unit_rate_for(atype)
+                except KeyError:
+                    default_rate = 4_800.0
+                rate = rc.number_input("$/m²", 500.0, 12_000.0, float(default_rate), 100.0)
+                grc_total = extent * rate
+            st.caption(
+                f"Replacement cost: **{_fmt_money(grc_total)}** · expands to 7 components "
+                f"under `{next_bid}`. Deterioration is component-typical (not asset-type "
+                "specific); climate exposure is council-average (not suburb-specific).")
+            if st.form_submit_button("Add to proposals", type="primary"):
+                try:
+                    lat, lon = _suburb_centroid(conn, suburb)
+                    rows = build_proposed_building(
+                        building_id=next_bid, status=status, name=name,
+                        asset_type=atype, suburb=suburb, install_year=int(year),
+                        condition=float(cond), criticality=float(crit),
+                        grc_total=(grc_total if mode == "Lump sum" else None),
+                        extent=(extent if mode != "Lump sum" else None),
+                        lat=lat, lon=lon,
+                    )
+                except (ValueError, ValidationError) as e:    # [FIX-G8] inline validation
+                    st.error(f"Could not add proposal: {e}")
+                    return None
+                return {
+                    "building_id": next_bid, "status": status, "rows": rows,
+                    "enabled": True, "label": name,
+                    "commission_year": int(year),
+                    "first_renewal_year": int(year) + int(min_component_life(rows)),
+                }
+    return None
+
+
+def _proposal_ledger(st, proposals: list[dict]) -> bool:
+    """Render the proposal ledger with enable/disable + remove (S.4.4).
+
+    Returns True if the ledger changed (a rerun is warranted). Mutates the
+    ``proposals`` list in place. [FIX-G11] netting caption when 2+ are enabled.
+    """
+    if not proposals:
+        return False
+    changed = False
+    n_enabled = sum(1 for p in proposals if p["enabled"])
+    st.markdown("#### Proposal ledger")
+    if n_enabled >= 2:
+        st.caption(
+            f"Combined effect of {n_enabled} enabled proposals — individual "
+            "contributions may offset (a flattering new build can net against a "
+            "worsening missing asset). Disable proposals to isolate a single story.")
+    for i, p in enumerate(list(proposals)):
+        c1, c2, c3, c4 = st.columns([0.5, 3, 1.2, 0.8])
+        with c1:
+            new_enabled = st.checkbox(
+                "on", value=p["enabled"], key=f"_wi_en_{p['building_id']}",
+                label_visibility="collapsed")
+            if new_enabled != p["enabled"]:
+                p["enabled"] = new_enabled
+                changed = True
+        with c2:
+            tag = "Proposed" if p["status"] == "proposed" else "Missing"
+            st.markdown(
+                f"**{p['label']}** · `{p['building_id']}` · {tag} · "
+                f"renews ~{p['first_renewal_year']}")
+        with c3:
+            st.caption(f"{len(p['rows'])} components")
+        with c4:
+            if st.button("Remove", key=f"_wi_rm_{p['building_id']}"):
+                proposals.remove(p)
+                st.session_state["_whatif_last_event"] = {
+                    "event": "remove", "status": p["status"], "label": p["label"],
+                    "n_enabled": sum(1 for q in proposals if q["enabled"]),
+                }
+                changed = True
+    return changed
+
+
+def _delta_kpi_card(st, label, value_str, delta, *, good_when="down",
+                    fmt=None, unit="") -> None:
+    """A KPI card with a vs-today change chip (S.4.3). Reuses ``_kpi_card``."""
+    if fmt is None:
+        fmt = lambda d: f"{d:+,.0f}"  # noqa: E731
+    if delta is None:
+        _kpi_card(st, label, value_str, "needs recompute", "")
+        return
+    if abs(delta) < 1e-9:
+        _kpi_card(st, label, value_str, "no change", "")
+        return
+    improving = (delta < 0) if good_when == "down" else (delta > 0)
+    tone = "good" if improving else "bad"
+    _kpi_card(st, label, value_str, f"{fmt(delta)}{unit} vs today", tone)
+
+
+def _channel_a_cards(st, ca: dict) -> None:
+    """The four exact Channel-A delta cards (S.2.1, S.4.3)."""
+    acr = ca["acr"]
+    dep = ca["depreciation"]
+    backlog = ca["backlog"]
+
+    def _pct(v):
+        return f"{v * 100:.0f}%" if v is not None else "—"
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        _delta_kpi_card(
+            st, "Asset Consumption Ratio", _pct(acr["proposed"]),
+            (acr["delta"] * 100 if acr["delta"] is not None else None),
+            good_when="up", fmt=lambda d: f"{d:+.1f}", unit="pp")
+    with c2:
+        _delta_kpi_card(
+            st, "Annual depreciation (ASR denom)", _fmt_money(dep["proposed"]),
+            dep["delta"], good_when="down", fmt=lambda d: _fmt_money(abs(d)).replace("$", ("+$" if d > 0 else "-$")))
+    with c3:
+        _delta_kpi_card(
+            st, "Renewal backlog", _pct(backlog["proposed"]),
+            (backlog["delta"] * 100 if backlog["delta"] is not None else None),
+            good_when="down", fmt=lambda d: f"{d:+.1f}", unit="pp")
+    with c4:
+        grade = ca.get("portfolio_grade")
+        if grade:
+            _kpi_card(st, "Portfolio grade",
+                      f"{GRADE_NUMBER[grade['base']]} → {GRADE_NUMBER[grade['proposed']]}"
+                      if grade['base'] != grade['proposed']
+                      else str(GRADE_NUMBER[grade['base']]),
+                      "value-weighted · 1–5", "")
+        else:
+            _kpi_card(st, "Portfolio grade", "—", "needs assets", "")
+
+
+def _channel_b_dimmed(st) -> None:
+    """Dimmed Channel-B cards shown before a recompute (S.2.2)."""
+    st.markdown(
+        '<div style="opacity:0.5;">', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        _kpi_card(st, "Asset Renewal Funding Ratio", "—",
+                  "Recompute to model funding impact", "")
+    with c2:
+        _kpi_card(st, "Funding gap p50", "—",
+                  "Recompute to model funding impact", "")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _tab_whatif(st, go, px, pd, conn, db_path, scenario: str, budget: float, horizon: int) -> None:
+    """THE WHAT-IF — add a proposed / missing building and see the impact (S.4).
+
+    Channel A (instant, exact, no solve) renders on every add/toggle. Channel B
+    (ARFR / gap / corridor) and B' (programme displacement) require a shadow
+    recompute behind the "Recompute impact" / "Re-solve programme" buttons. The
+    canonical DB is never written — all recompute lands on a file-copy shadow.
+    """
+    from engine.render.metrics import asset_economics, report_card
+    from engine.whatif.ui_logic import (
+        baseline_cache_key,
+        channel_a_metrics,
+        displacement_diff,
+        net_new_liability,
+        whatif_cache_key,
+    )
+
+    proposals: list[dict] = st.session_state.setdefault("_whatif_proposals", [])
+    n_enabled = sum(1 for p in proposals if p["enabled"])
+
+    _whatif_banner(st, n_enabled)
+    _whatif_explainer(st)
+
+    # [FIX-G12] Degraded-state guard — Channel A only on an un-simulated DB.
+    mc_empty = _table_is_empty(conn, "mc_paths")
+    if mc_empty:
+        st.warning(
+            "Run the full pipeline first to model funding-gap impact — only the exact "
+            "register-derived ratios (ACR, ASR denominator, backlog, grade) are available "
+            "on this database.")
+
+    # The proposal form.
+    new = _proposal_form(
+        st, conn,
+        _next_proposal_bid(proposals, "proposed"),
+        _next_proposal_bid(proposals, "missing"),
+    )
+    if new is not None:
+        proposals.append(new)
+        st.session_state["_whatif_last_event"] = {
+            "event": "add", "status": new["status"], "label": new["label"],
+            "n_enabled": sum(1 for p in proposals if p["enabled"]),
+        }
+        st.rerun()
+
+    if _proposal_ledger(st, proposals):
+        st.rerun()
+
+    enabled = [p for p in proposals if p["enabled"]]
+    if not enabled:
+        st.info("Add a proposal above to preview its impact.")
+        return
+
+    enabled_rows: list = []
+    for p in enabled:
+        enabled_rows.extend(p["rows"])
+
+    # ---- Channel A: instant, exact (no solve) ---------------------------- #
+    # Register-derived, so it works even on a degraded (un-simulated) DB — no
+    # mc_paths needed; ACR / depreciation / backlog come straight off the
+    # assets table via asset_economics + report_card (S.2.1).
+    econ = asset_economics(conn)
+    rc = report_card(conn)
+    ca = channel_a_metrics(econ, rc, enabled_rows)
+    # Portfolio-grade diff (value-weighted, with the proposals folded in).
+    ca["portfolio_grade"] = _grade_with_proposals(rc, enabled_rows)
+
+    st.markdown("#### Instant impact — exact register-derived ratios (Channel A)")
+    st.caption(
+        "These four move the instant a proposal is added — they are computed per "
+        "component, in closed form, with no simulation. Exact, not modelled.")
+    _channel_a_cards(st, ca)
+
+    # Net-new-liability badge (S.5) — fires per proposed build whose earliest
+    # component breach lands beyond the horizon.
+    for p in enabled:
+        if p["status"] == "proposed" and net_new_liability(
+            p["rows"], p["commission_year"], horizon
+        ):
+            st.markdown(
+                f"""
+                <div style="border:2px solid {GOLD}; background:#fffdf0; border-radius:12px;
+                     padding:0.7rem 1rem; margin:0.6rem 0; color:{CHARCOAL}; font-weight:600;">
+                  ⚠️ Net-new liability — <b>{p['label']}</b> embeds a renewal need at
+                  ~{p['first_renewal_year']}, beyond the {horizon}-year horizon
+                  (ends {CURRENT_YEAR + horizon}). It flatters today's picture but the
+                  liability lands later — visible in the 50-year corridor.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.markdown('<div style="height:1.1rem"></div>', unsafe_allow_html=True)
+    st.markdown("#### Modelled funding impact (Channel B)")
+
+    recompute_disabled = mc_empty or st.session_state.get("_whatif_running", False)
+    cset = st.columns([1.4, 1.4, 2])
+    with cset[0]:
+        precision = st.radio(
+            "Fidelity", ["Fast preview", "Precise"], horizontal=True,
+            help="Fast: N≈40 realisations / 40 scenarios. Precise: 200 / 60.")
+    # Fast-preview N=30: an N-sweep on the full 1505-component register showed the
+    # portfolio-aggregate ARFR / gap / corridor are stable to <1% from N=20 up to
+    # N=200 (the large portfolio averages out per-asset MC noise), so 30 is a safe
+    # directional default and ~halves the original N=80 pass. Precise stays at 200.
+    n_real = 30 if precision == "Fast preview" else 200
+    n_scen = 40 if precision == "Fast preview" else 60
+    with cset[1]:
+        do_resolve = st.checkbox(
+            "Also re-solve the programme", value=False,
+            help="Tier B′ — runs Stage 6 to show which existing building is displaced.")
+    with cset[2]:
+        recompute = st.button(
+            "Recompute impact", type="primary", disabled=recompute_disabled,
+            key="_whatif_recompute")
+        if mc_empty:
+            st.caption("Run the full pipeline first to model funding-gap impact.")
+
+    cache_key = whatif_cache_key(scenario, budget, horizon, do_resolve, proposals)
+    cached = st.session_state.get("_whatif_result")
+    if cached is not None and cached.get("key") != cache_key:
+        # A proposal edit / scenario / budget change invalidated the result — show
+        # the stale diff greyed rather than blanking (S.4.6).
+        st.caption(
+            "Inputs changed since the last recompute — the diff below is **stale**. "
+            "Re-run *Recompute impact* under the current scenario/budget.")
+
+    # Baseline cache — the canonical-only baseline pass does NOT depend on which
+    # proposals are added, so it is keyed on EXACTLY the baseline-affecting inputs
+    # (no proposal digest / count). Reusing it across proposal edits is parity-
+    # neutral (same N / SHADOW_SEED as the proposal pass). This speeds the common
+    # loop of tweak-a-proposal -> recompute: only the proposal pass re-runs.
+    # Quantise the budget ONCE ($10k — matches whatif_cache_key's rounding and is
+    # finer than the sidebar's $100k slider step) and thread budget_q through the
+    # key AND both passes below, so the key can never gate a baseline computed at a
+    # different budget. n_scen is in the key only under do_resolve, because the
+    # cached base_units come from baseline_solve(..., n_scenarios=n_scen).
+    budget_q = round(float(budget), -4)
+    baseline_key = baseline_cache_key(
+        scenario, budget, horizon, n_real, n_scen, do_resolve)
+    baseline_cache: dict = st.session_state.setdefault("_whatif_baseline_cache", {})
+    baseline_from_cache = False
+
+    if recompute and not recompute_disabled:
+        st.session_state["_whatif_running"] = True
+        try:
+            baseline = baseline_cache.get(baseline_key)
+            baseline_from_cache = baseline is not None
+            spinner_msg = (
+                f"Re-running the proposal pass at N={n_real} (baseline reused)…"
+                if baseline_from_cache
+                else f"Building shadow and re-running the model at N={n_real}…"
+            )
+            with st.spinner(spinner_msg):
+                if baseline is None:
+                    baseline = _compute_whatif_baseline(
+                        db_path, scenario, budget_q, horizon,
+                        n_real, n_scen, do_resolve,
+                    )
+                    baseline_cache[baseline_key] = baseline
+                    # Cap session-cache growth over a long slider-dragging demo:
+                    # keep only the most-recent 8 baseline keys.
+                    if len(baseline_cache) > 8:
+                        for k in list(baseline_cache)[:-8]:
+                            del baseline_cache[k]
+                result = _run_whatif_recompute(
+                    db_path, enabled_rows, scenario, budget_q, horizon,
+                    n_real, n_scen, do_resolve, cache_key, baseline=baseline,
+                )
+            result["baseline_from_cache"] = baseline_from_cache
+            st.session_state["_whatif_result"] = result
+        except Exception as e:  # surface, never crash the view
+            st.error(f"Recompute failed: {e}")
+        finally:
+            st.session_state["_whatif_running"] = False
+
+    result = st.session_state.get("_whatif_result")
+    if result is None:
+        _channel_b_dimmed(st)
+        st.caption(
+            "ARFR, funding gap, and the compliance corridor are *modelled*, not exact — "
+            "they need a Monte-Carlo re-run. Click **Recompute impact**.")
+        return
+
+    if result.get("baseline_from_cache"):
+        st.caption("Baseline reused from cache — only the proposal pass was re-run.")
+    _render_whatif_result(st, go, pd, result, horizon, displacement_diff)
+
+
+def _grade_with_proposals(rc: dict, new_rows: list) -> dict | None:
+    """Value-weighted portfolio grade before/after folding in the proposal rows."""
+    if not rc:
+        return None
+    base_grade = rc["portfolio_grade"]
+    total = float(rc["total_value"] or 0.0)
+    wcond = rc["portfolio_condition"] * total
+    # Per building: a building's condition is its worst component (MAX).
+    by_bid: dict[str, dict] = {}
+    for r in new_rows:
+        aid = r.asset_id if hasattr(r, "asset_id") else r["asset_id"]
+        bid = aid.split("-", 1)[0]
+        cond = float(r.condition if hasattr(r, "condition") else r["condition"])
+        grc = float(r.grc if hasattr(r, "grc") else r["grc"])
+        b = by_bid.setdefault(bid, {"cond": cond, "value": 0.0})
+        b["cond"] = max(b["cond"], cond)
+        b["value"] += grc
+    for b in by_bid.values():
+        wcond += b["cond"] * b["value"]
+        total += b["value"]
+    new_cond = wcond / total if total else 0.0
+    return {"base": base_grade, "proposed": condition_grade(new_cond)}
+
+
+def _compute_whatif_baseline(db_path, scenario, budget, horizon,
+                             n_real, n_scen, do_resolve) -> dict:
+    """Canonical-only baseline pass on its OWN shadow (S.2.5).
+
+    The baseline does NOT depend on which proposals are added — it runs over the
+    canonical register only, before any proposal rows are inserted. So it is fully
+    determined by ``(scenario, budget, horizon, n_real, do_resolve)`` and is safe
+    to cache and reuse across proposal edits (caching is parity-neutral: identical
+    to recomputing it inline at the same N/SHADOW_SEED).
+
+    Extracts the baseline metrics as plain values (numbers / dicts / lists) so the
+    shadow can be torn down immediately — nothing here holds the connection.
+    """
+    from engine.render.metrics import financial_indicators as _fi
+    from engine.whatif.recompute import baseline_solve, run_stage_2_5
+    from engine.whatif.shadow import close_shadow, open_shadow
+
+    conn, _path = open_shadow(db_path)
+    try:
+        # [H6] Run the MC to the stress horizon so the 50-yr corridor/metrics read
+        # real simulated data, not a table truncated at the 25-yr decision horizon.
+        run_stage_2_5(conn, horizon=max(horizon, HORIZON_STRESS), n_realisations=n_real)
+        base_fi = _fi(conn, scenario, horizon=horizon, annual_budget=budget)
+        base_fi50 = _fi(conn, scenario, horizon=HORIZON_STRESS, annual_budget=budget)
+        base_summary = _fetch_dicts(
+            conn,
+            "SELECT year, avg_condition, breach_share FROM mc_summary "
+            "WHERE scenario = ? ORDER BY year", [scenario])
+        base_units = None
+        if do_resolve:
+            base_units = baseline_solve(
+                conn, horizon=horizon, annual_budget=budget, n_scenarios=n_scen)
+        return {
+            "base_fi": base_fi, "base_fi50": base_fi50,
+            "base_summary": base_summary, "base_units": base_units,
+        }
+    finally:
+        close_shadow(conn)
+
+
+def _run_whatif_recompute(db_path, new_rows, scenario, budget, horizon,
+                          n_real, n_scen, do_resolve, cache_key,
+                          baseline: dict | None = None) -> dict:
+    """Open a shadow, run baseline + proposed passes at the same N/seed (S.2.5).
+
+    Returns a plain result dict (never the connection — unpicklable, [FIX-D8]).
+    The shadow is read while open, all derived panels snapshotted, then torn down.
+
+    ``baseline`` — when supplied (from the session-state baseline cache), the
+    canonical-only baseline pass is SKIPPED and its already-extracted metrics are
+    reused. This is parity-neutral: the cached baseline was computed at the same
+    ``n_real``/``SHADOW_SEED`` as the proposal pass below, so the displacement diff
+    (cached ``base_units`` vs the proposal solve units) still compares like for like.
+    On a miss the baseline is computed here on its own shadow first.
+    """
+    from engine.render.metrics import financial_indicators as _fi
+    from engine.render.programme import funded_programme, spend_by_year
+    from engine.whatif.recompute import recompute_with_new_assets
+    from engine.whatif.shadow import close_shadow, open_shadow
+
+    if baseline is None:
+        baseline = _compute_whatif_baseline(
+            db_path, scenario, budget, horizon, n_real, n_scen, do_resolve)
+    base_fi = baseline["base_fi"]
+    base_fi50 = baseline["base_fi50"]
+    base_summary = baseline["base_summary"]
+    base_units = baseline["base_units"]
+
+    # Proposal pass opens its OWN fresh shadow (canonical + inserted proposals).
+    # open_shadow is single-slot: this tears down any prior shadow, which is fine —
+    # the baseline metrics above are already extracted as plain values.
+    conn, _path = open_shadow(db_path)
+    try:
+        # Insert proposals, re-run (and re-solve if Tier B′).
+        prop_units = recompute_with_new_assets(
+            conn, new_rows, scenario=scenario, horizon=horizon, annual_budget=budget,
+            n_realisations=n_real, n_scenarios=n_scen, resolve=do_resolve,
+            baseline_units=base_units,
+            mc_horizon=max(horizon, HORIZON_STRESS))  # [H6] MC to the stress horizon
+        prop_fi = _fi(conn, scenario, horizon=horizon, annual_budget=budget)
+        prop_fi50 = _fi(conn, scenario, horizon=HORIZON_STRESS, annual_budget=budget)
+        prop_summary = _fetch_dicts(
+            conn,
+            "SELECT year, avg_condition, breach_share FROM mc_summary "
+            "WHERE scenario = ? ORDER BY year", [scenario])
+        # Dual-horizon corridor (25 & 50 yr) on the proposed shadow.
+        comp25 = arfr_compliance(conn, scenario, horizon=horizon, annual_budget=budget)
+        comp50 = arfr_compliance(conn, scenario, horizon=HORIZON_STRESS, annual_budget=budget)
+        minb = minimum_sustainable_budget(conn, scenario, horizon=horizon)
+        # Per-component breach for the proposed buildings.
+        comp_breach = _fetch_dicts(
+            conn,
+            "SELECT asset_id, MIN(year) AS first_breach "
+            "FROM mc_paths WHERE scenario = ? AND condition >= 4.0 "
+            "AND (asset_id LIKE 'p%' OR asset_id LIKE 'u%') GROUP BY asset_id "
+            "ORDER BY asset_id", [scenario])
+        # Assigned climate exposure (council-average) for the proposals.
+        expo = _fetch_dicts(
+            conn,
+            "SELECT hazard, AVG(intensity) AS intensity FROM climate_exposure "
+            "WHERE scenario = ? AND (asset_id LIKE 'p%' OR asset_id LIKE 'u%') "
+            "GROUP BY hazard ORDER BY hazard", [scenario])
+        # Need-by-year (proposed shadow) from cumulative need.
+        from engine.render.metrics import cumulative_need
+        need25 = cumulative_need(conn, scenario, horizon, 0.50)
+        prog = None
+        if do_resolve:
+            prog = {
+                "funded": funded_programme(conn, horizon=horizon),
+                "spend": spend_by_year(conn, horizon=horizon),
+                "base_units": base_units,
+                "prop_units": prop_units,
+            }
+        return {
+            "key": cache_key,
+            "n_real": n_real,
+            "n_scen": n_scen,
+            "scenario": scenario,
+            "base_fi": base_fi, "prop_fi": prop_fi,
+            "base_fi50": base_fi50, "prop_fi50": prop_fi50,
+            "base_summary": base_summary, "prop_summary": prop_summary,
+            "comp25": comp25, "comp50": comp50, "minb": minb,
+            "comp_breach": comp_breach, "expo": expo,
+            "need25_years": list(range(CURRENT_YEAR, CURRENT_YEAR + horizon)),
+            "need25": need25,
+            "programme": prog,
+        }
+    finally:
+        close_shadow(conn)
+
+
+def _render_whatif_result(st, go, pd, result, horizon, displacement_diff) -> None:
+    """Render the six before/after cards, impact sub-panel, dual corridor, programme."""
+    base = result["base_fi"]
+    prop = result["prop_fi"]
+    n = result["n_real"]
+
+    def _d(key):
+        b = base.get(key)
+        p = prop.get(key)
+        if b is None or p is None:
+            return p, None
+        return p, p - b
+
+    n_scen = result.get("n_scen", n)
+    st.success(
+        f"Modelled at N={n} realisations over {n_scen} cost scenarios — fast preview "
+        f"is directional; the p95 band settles under **Precise**. Numbers below are "
+        f"**modelled**, not exact.")
+    st.markdown("##### Before / after — six headline indicators")
+    r1 = st.columns(4)
+    arfr_v, arfr_d = _d("arfr")
+    gap_v, gap_d = _d("gap_p50")
+    acr_v, acr_d = _d("acr")
+    asr_v, asr_d = _d("asr")
+    with r1[0]:
+        _delta_kpi_card(
+            st, "ARFR (modelled)",
+            f"{arfr_v * 100:.0f}%" if arfr_v else "—",
+            (arfr_d * 100 if arfr_d is not None else None),
+            good_when="up", fmt=lambda x: f"{x:+.0f}", unit="pp")
+    with r1[1]:
+        _delta_kpi_card(
+            st, "Funding gap p50", _fmt_money(gap_v or 0.0), gap_d,
+            good_when="down",
+            fmt=lambda x: ("+" if x > 0 else "-") + _fmt_money(abs(x)))
+    with r1[2]:
+        _delta_kpi_card(
+            st, "Asset Consumption Ratio",
+            f"{acr_v * 100:.0f}%" if acr_v else "—",
+            (acr_d * 100 if acr_d is not None else None),
+            good_when="up", fmt=lambda x: f"{x:+.1f}", unit="pp")
+    with r1[3]:
+        _delta_kpi_card(
+            st, "Asset Sustainability Ratio",
+            f"{asr_v * 100:.0f}%" if asr_v else "—",
+            (asr_d * 100 if asr_d is not None else None),
+            good_when="up", fmt=lambda x: f"{x:+.0f}", unit="pp")
+    r2 = st.columns(4)
+    bl_v, bl_d = _d("backlog")
+    with r2[0]:
+        _delta_kpi_card(
+            st, "Renewal backlog",
+            f"{bl_v * 100:.0f}%" if bl_v is not None else "—",
+            (bl_d * 100 if bl_d is not None else None),
+            good_when="down", fmt=lambda x: f"{x:+.1f}", unit="pp")
+    with r2[1]:
+        gb = base.get("portfolio_grade")
+        gp = prop.get("portfolio_grade")
+        gb_n = GRADE_NUMBER.get(gb) if gb else None
+        gp_n = GRADE_NUMBER.get(gp) if gp else None
+        _kpi_card(st, "Portfolio grade",
+                  f"{gb_n} → {gp_n}" if gb != gp else (str(gp_n) if gp_n else "—"),
+                  "value-weighted · 1–5", "")
+
+    # Budget-raise answer (S.4.3 [FIX-G3]) — framed against ASR sustainability.
+    minb = result.get("minb") or {}
+    p50 = minb.get("p50", {})
+    with st.container(border=True):
+        st.markdown("**Budget to keep this portfolio sustainable**")
+        bb1, bb2 = st.columns(2)
+        with bb1:
+            _kpi_card(st, "Budget to average ARFR 100%",
+                      f"{_fmt_money(p50.get('target_budget', 0.0))}/yr",
+                      "with the proposals folded in")
+        with bb2:
+            _kpi_card(st, "Budget to never drop below 80%",
+                      f"{_fmt_money(p50.get('floor_budget', 0.0))}/yr",
+                      "the flat budget that holds the floor", "warn")
+
+    # Impact sub-panel (S.4.3 [FIX-G1]).
+    st.markdown('<div style="height:0.9rem"></div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown("**Impact detail — condition, need timing, and the proposed asset's breach**")
+        bs = pd.DataFrame(result["base_summary"])
+        ps = pd.DataFrame(result["prop_summary"])
+        if not bs.empty and not ps.empty:
+            cfig = go.Figure()
+            cfig.add_trace(go.Scatter(
+                x=bs["year"], y=bs["avg_condition"], name="avg condition (today)",
+                line=dict(color="#6b7568", width=2, dash="dot")))
+            cfig.add_trace(go.Scatter(
+                x=ps["year"], y=ps["avg_condition"], name="avg condition (with proposal)",
+                line=dict(color=BRIGHT_GREEN, width=3)))
+            cfig.update_layout(margin=dict(l=8, r=8, t=8, b=8), height=240,
+                               legend=dict(orientation="h", y=-0.25),
+                               yaxis=dict(title="avg condition (1 new – 5 failed)"))
+            st.plotly_chart(cfig, width="stretch")
+
+        nfig = go.Figure(go.Scatter(
+            x=result["need25_years"], y=result["need25"], fill="tozeroy",
+            line=dict(color="#e8590c", width=2), name="cumulative renewal need (p50)"))
+        nfig.update_layout(margin=dict(l=8, r=8, t=8, b=8), height=220,
+                           yaxis=dict(title="cumulative renewal need $", tickprefix="$",
+                                      tickformat="~s"))
+        st.plotly_chart(nfig, width="stretch")
+
+        cbreach = result.get("comp_breach") or []
+        if cbreach:
+            st.markdown("**Per-component first breach (the proposed building)**")
+            st.dataframe(pd.DataFrame(cbreach).rename(
+                columns={"asset_id": "Component", "first_breach": "First breach year"}),
+                width="stretch", hide_index=True)
+        expo = result.get("expo") or []
+        if expo:
+            expo_txt = " · ".join(
+                f"{e['hazard']}: {float(e['intensity']):.2f}" for e in expo)
+            st.caption(
+                f"Assigned climate exposure (council-average, not suburb-specific): {expo_txt}. "
+                "The proposed asset inherits the fixture-average hazard curve.")
+
+    # Dual-horizon compliance corridor (25 & 50 yr, S.4.3).
+    st.markdown('<div style="height:0.9rem"></div>', unsafe_allow_html=True)
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        with st.container(border=True):
+            st.markdown("**Compliance corridor — 25-year**")
+            _compliance_corridor(st, go, result.get("comp25"), None)
+    with cc2:
+        with st.container(border=True):
+            st.markdown("**Compliance corridor — 50-year (embedded liability shows here)**")
+            _compliance_corridor(st, go, result.get("comp50"), None)
+
+    # Programme displacement (Tier B′).
+    prog = result.get("programme")
+    if prog is not None:
+        st.markdown('<div style="height:0.9rem"></div>', unsafe_allow_html=True)
+        diff = displacement_diff(prog["base_units"], prog["prop_units"], horizon)
+        with st.container(border=True):
+            st.markdown("**Programme displacement — who moves to make room**")
+            st.caption(
+                "Gold: a proposal that won a funded slot. Red: an existing building funded "
+                "in the baseline solve but pushed out by the proposal (same N/seed, so this "
+                "is real re-prioritisation, not sampling churn).")
+            if not diff["new_in"] and not diff["displaced"] and not diff["shifted"]:
+                st.info("No programme displacement at this budget — the proposal fits without "
+                        "pushing any existing renewal out.")
+            else:
+                rows = []
+                for d in diff["new_in"]:
+                    rows.append({"Building": d["asset_id"], "Change": "brought in (proposal)",
+                                 "Year": d["renew_year"], "_tone": "gold"})
+                for d in diff["displaced"]:
+                    rows.append({"Building": d["asset_id"], "Change": "displaced",
+                                 "Year": d["original_year"], "_tone": "red"})
+                for d in diff["shifted"]:
+                    rows.append({"Building": d["asset_id"],
+                                 "Change": f"shifted {d['original_year']}→{d['new_year']}",
+                                 "Year": d["new_year"], "_tone": ""})
+                ddf = pd.DataFrame(rows)
+
+                def _style(row):
+                    tone = row["_tone"]
+                    color = ("background-color:#fffced" if tone == "gold"
+                             else "background-color:#fbe3e3" if tone == "red" else "")
+                    return [color] * len(row)
+
+                show = ddf.drop(columns=["_tone"])
+                st.dataframe(ddf.style.apply(_style, axis=1).hide(["_tone"], axis=1)
+                             if hasattr(ddf.style, "hide") else show,
+                             width="stretch", hide_index=True)
 
 
 def _tab_engagement(st, go, pd, conn, scenario, budget, horizon) -> None:
@@ -1789,6 +2989,7 @@ def _tab_engagement(st, go, pd, conn, scenario, budget, horizon) -> None:
                     st.caption("No change at this weighting.")
                 else:
                     t = frame[["name", "suburb", "grade", "value", "engagement"]].copy()
+                    t["grade"] = t["grade"].map(GRADE_NUMBER)
                     t["value"] = t["value"].map(_fmt_money)
                     t["engagement"] = t["engagement"].map(lambda v: f"{v:.2f}")
                     st.dataframe(t, width="stretch", hide_index=True)
@@ -1807,29 +3008,103 @@ def _tab_engagement(st, go, pd, conn, scenario, budget, horizon) -> None:
     )
 
 
+def _portfolio_set_strip(st, conn, scenario: str, budget: float, horizon: int) -> None:
+    """The portfolio set — one recommended portfolio plus four credible options,
+    each made by moving a single lever and compared on the same data. Each card
+    leads with the metric its lever moves; the levers themselves sit in the tabs
+    below (budget A/B, community weighting, present-value timing)."""
+    try:
+        base = unfunded_liability(conn, scenario, horizon, budget)
+        fi = financial_indicators(conn, scenario, horizon=horizon, annual_budget=budget)
+        stretch_budget = budget * 1.5
+        stretch = unfunded_liability(conn, scenario, horizon, stretch_budget)
+    except Exception:
+        return
+    if not base:
+        return
+    arfr = fi.get("arfr") if fi else None
+    gap0 = base.get("gap_p50") or 0.0
+    gap_s = (stretch.get("gap_p50") or 0.0) if stretch else 0.0
+    closed = max(0.0, gap0 - gap_s)
+    arfr_disp = f"{arfr * 100:.0f}%" if arfr else "—"
+
+    cards = [
+        ("reco", "Recommended", "Balanced",
+         "The balanced optimum at the council's set budget.",
+         [("Budget", f"{_fmt_money(budget)}/yr", ""),
+          ("Gap (p50)", _fmt_money(gap0), "bad"),
+          ("ARFR by end", arfr_disp, "")]),
+        ("", "", "Budget-stretch",
+         "A higher annual spend, and what it buys down of the gap.",
+         [("Budget", f"{_fmt_money(stretch_budget)}/yr", ""),
+          ("Gap (p50)", _fmt_money(gap_s), "good"),
+          ("Closes", _fmt_money(closed), "good")]),
+        ("", "", "Risk-first",
+         "Guards the worst-case tail hardest (CVaR) — fewer surprises.",
+         [("Budget", f"{_fmt_money(budget)}/yr", ""),
+          ("Worst case (p95)", _fmt_money(base.get("gap_p95") or 0.0), ""),
+          ("Lens", "tail-guarded", "")]),
+        ("", "", "Community-led",
+         "Community + elected priorities weighted up — recorded, auditable.",
+         [("Budget", f"{_fmt_money(budget)}/yr", ""),
+          ("Gap (p50)", _fmt_money(gap0), ""),
+          ("Lens", "Engagement ↓", "")]),
+        ("", "", "Defer-and-save",
+         "Leans into deferrals where the present-value maths genuinely saves.",
+         [("Budget", f"{_fmt_money(budget)}/yr", ""),
+          ("Gap (p50)", _fmt_money(gap0), ""),
+          ("Lens", "Timing ↓", "")]),
+    ]
+    for col, (extra, tag, name, desc, rows) in zip(st.columns(5), cards):
+        rows_html = "".join(
+            f'<div class="orow"><span class="l">{label}</span>'
+            f'<span class="v {tone}">{v}</span></div>'
+            for label, v, tone in rows)
+        tag_html = f'<span class="tag">{tag}</span>' if tag else ""
+        with col:
+            st.markdown(
+                f'<div class="opt {extra}">{tag_html}<div class="onm">{name}</div>'
+                f'<div class="odesc">{desc}</div>{rows_html}</div>',
+                unsafe_allow_html=True)
+    st.caption(
+        "Every option is solved on the same data and scenario, so members compare "
+        "coherent programmes — not a single number to accept or reject. The levers "
+        "that generate each option are below: budget A/B, community weighting, and "
+        "present-value timing.")
+
+
 def _render_streamlit(
     conn: duckdb.DuckDBPyConnection,
     panels: dict,
     scenario: str,
     annual_budget: float,
     horizon: int,
+    db_path: str | Path = DEFAULT_DB,
 ) -> None:
-    """Draw the interactive report. Streamlit + Plotly imported lazily here."""
+    """Draw the interactive report. Streamlit + Plotly imported lazily here.
+
+    ``db_path`` is the canonical DuckDB PATH (the connection is read-only); the
+    What-If view needs the path to build a writable file-copy shadow from it.
+    """
     import pandas as pd
     import plotly.express as px
     import plotly.graph_objects as go
     import plotly.io as pio
     import streamlit as st
 
+    # "Bloom" Plotly template — restrained official-statistics feel: pastel
+    # lavender colourway, faint gridlines, no plot fill, tabular figures.
     pio.templates["mitcham"] = go.layout.Template(
         layout=dict(
-            font=dict(family="Inter, sans-serif", color="#17231a", size=13),
-            title=dict(font=dict(family="Inter, sans-serif", size=16, color="#17231a")),
-            colorway=["#097556", "#01310c", "#a8ab12", "#496516", "#b8930a"],
+            font=dict(family="Inter, sans-serif", color=INK, size=13),
+            title=dict(font=dict(family="Inter, sans-serif", size=16, color=INK)),
+            colorway=[ACCENT, DEEP, "#7a9a5e", ACCENT_2, "#b8930a"],
             paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="#ffffff",
-            xaxis=dict(gridcolor="#eef1ee", zerolinecolor="#eef1ee"),
-            yaxis=dict(gridcolor="#eef1ee", zerolinecolor="#eef1ee"),
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(gridcolor="#e6e0ee", zerolinecolor="#e6e0ee", linecolor="#d9d1e4"),
+            yaxis=dict(gridcolor="#e6e0ee", zerolinecolor="#e6e0ee", linecolor="#d9d1e4"),
+            colorscale=dict(sequential=[[0, "#ece5f4"], [0.5, ACCENT_2], [1, ACCENT_DEEP]]),
+            hoverlabel=dict(font=dict(family="Inter, sans-serif")),
         )
     )
     pio.templates.default = "mitcham"
@@ -1839,34 +3114,55 @@ def _render_streamlit(
     )
     _inject_brand_css(st)
 
-    views = ["The Call", "The Plan", "The Portfolio", "The Trade-offs"]
+    views = ["The Call", "The Plan", "The Portfolio", "The Trade-offs", "The What-If"]
     subtitles = {
         "The Call": "Where the portfolio stands today, what we recommend, and the 25-year picture",
         "The Plan": "The actionable renewal programme — what's funded, what's deferred, the spend by year",
         "The Portfolio": "Every council building — by suburb, condition, and climate exposure",
         "The Trade-offs": "Compare funding strategies, weight engagement, time renewals on present value",
+        "The What-If": "Add a proposed or missing building and watch the whole financial picture move",
     }
 
-    with st.sidebar:
-        _sidebar_brand(st)
-        view = st.radio("Navigate", views, label_visibility="collapsed")
-        st.markdown('<div style="height:0.5rem"></div>', unsafe_allow_html=True)
+    # Branded top bar (identity only); nav + controls render beneath it.
+    st.markdown(
+        '<div class="appbar">'
+        '<div><div class="nm">Buildings Renewal Outlook'
+        '<span class="demo-badge">Demo</span></div>'
+        '<div class="sub">City of Mitcham &middot; Asset Management</div></div>'
+        '<div class="prep">Prepared by <b>Social Capital Advisory</b><br>'
+        '<span class="motto">Posteris Aedificemus</span></div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Horizontal nav (styled as a tab strip) + the persistent context controls.
+    # Punchy names carry a plain functional tag so the strip is legible cold; the
+    # returned value stays the punchy key used for routing and the page title.
+    nav_labels = {
+        "The Call": "The Call · Overview",
+        "The Plan": "The Plan · Programme",
+        "The Portfolio": "The Portfolio · Map",
+        "The Trade-offs": "The Trade-offs · Options",
+        "The What-If": "The What-If",
+    }
+    view = st.radio(
+        "Navigate", views, label_visibility="collapsed", horizontal=True,
+        format_func=lambda v: nav_labels.get(v, v))
+    cc1, cc2, cc3 = st.columns([1.5, 2.4, 0.9], vertical_alignment="bottom")
+    with cc1:
         sel_scenario = st.selectbox(
             "Climate scenario", SCENARIOS,
             index=SCENARIOS.index(scenario) if scenario in SCENARIOS else 1,
             format_func=lambda s: SCENARIO_LABELS.get(s, s))
+    with cc2:
         sel_budget = 1_000_000.0 * st.slider(
             "Annual renewal budget", min_value=0.2, max_value=8.0,
             value=float(annual_budget) / 1_000_000, step=0.1, format="$%.1fM")
-        st.caption(
-            "What the council commits to building renewal each year. The model directs it "
-            "to the highest-priority buildings; The Call shows the funding gap that remains.")
+    with cc3:
         st.markdown(
-            '<div class="sb-foot">Prepared by <b>Social Capital Advisory</b>.<br>'
-            "Decision support, not decision authority. Illustrative data from public sources.<br><br>"
-            "<i>POSTERIS AEDIFICEMUS</i> &mdash; &ldquo;we build for posterity&rdquo;.</div>",
-            unsafe_allow_html=True,
-        )
+            '<div style="padding-bottom:0.5rem; font-size:0.78rem; color:var(--muted);">'
+            'As at <b style="color:var(--ink-2);">30 Jun 2026</b></div>',
+            unsafe_allow_html=True)
 
     panels = _gather_panels(conn, sel_scenario, sel_budget, horizon)
 
@@ -1887,10 +3183,20 @@ def _render_streamlit(
     if view == "The Call":
         _tab_call(st, go, pd, conn, panels, sel_scenario, sel_budget, horizon)
     elif view == "The Plan":
-        _tab_plan(st, go, px, pd, conn, sel_scenario, sel_budget, horizon)
+        _tab_plan(st, go, px, pd, conn, panels, sel_scenario, sel_budget, horizon)
     elif view == "The Portfolio":
         _tab_portfolio(st, go, px, pd, conn, panels, sel_scenario, horizon)
+    elif view == "The What-If":
+        _tab_whatif(st, go, px, pd, conn, db_path, sel_scenario, sel_budget, horizon)
     else:  # The Trade-offs
+        st.markdown("##### The portfolio set — one recommendation, four options")
+        st.caption(
+            "The optimiser hands back one recommended portfolio plus four credible "
+            "options, each made by moving a single lever. Choose between coherent "
+            "programmes, not a single number.")
+        _portfolio_set_strip(st, conn, sel_scenario, sel_budget, horizon)
+        st.markdown('<div style="height:1.1rem"></div>', unsafe_allow_html=True)
+        st.markdown("##### The levers behind the options")
         engage_tab, scen_tab, time_tab = st.tabs(
             ["Engagement weighting", "Scenarios A/B", "Timing & deferral"])
         with engage_tab:
@@ -1912,6 +3218,20 @@ def _render_streamlit(
             _deferral_panel(st, conn, sel_scenario, sel_budget, horizon)
             st.markdown('<div style="height:1rem"></div>', unsafe_allow_html=True)
             _timing_panel(st, conn, sel_scenario, horizon)
+
+    # Provenance footer — the trust signal an officer defends to ESCOSA. Shown
+    # on every view so the as-at date, source and method travel with the figures.
+    st.markdown(
+        '<div class="provfoot">'
+        '<span><b>As at</b> 30 Jun 2026</span>'
+        '<span><b>Source</b> Mitcham public data (synthesised)</span>'
+        f'<span><b>Model run</b> {SCENARIO_LABELS.get(sel_scenario, sel_scenario)} &middot; '
+        f'{horizon}-yr &middot; stochastic MILP + CVaR&#8329;&#8325;</span>'
+        '<span><b>Method</b> decision support, not decision authority — '
+        'chartered-engineer sign-off before any capital decision</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _parse_db_arg(argv: list[str]) -> Path:

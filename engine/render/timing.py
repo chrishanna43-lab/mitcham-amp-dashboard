@@ -68,7 +68,9 @@ def optimal_timing(
             "saving": 0.0, "tpv": [], "candidate_years": [], "act_now": False,
         }
     t_b = int(breached[0])
-    carry = carry_rate * criticality * c0
+    # [L5] Clamp criticality to [0,1] at the boundary; an out-of-range seed would
+    # otherwise scale the carrying cost unboundedly (the schema has no validator).
+    carry = carry_rate * float(np.clip(criticality, 0.0, 1.0)) * c0
     max_k = horizon - 1 - t_b
     tpv: list[float] = []
     for k in range(max_k + 1):
@@ -76,6 +78,17 @@ def optimal_timing(
         pv_renew = c0 * (1.0 + g) ** k / (1.0 + r) ** (t_b + k)
         tpv.append(pv_carry + pv_renew)
     tpv_arr = np.array(tpv)
+    # [M9 — KNOWN LIMITATION, flagged for chartered-engineer sign-off; do NOT
+    # "fix" silently.] k_star minimises present-value-to-today of a fixed future
+    # renewal bill. Because (1+g)/(1+r) < 1 whenever r > g, each extra year of
+    # deferral unconditionally lowers that PV, so with a low carrying cost k_star
+    # is biased toward the horizon edge ("defer forever"). Australian public-sector
+    # appraisal (NSW Treasury TPP07-5; IPWEA IIMM/NAMS Optimised Decision-Making;
+    # Infrastructure Australia 7% real discount, sensitivities 4%/10%) prescribes
+    # EQUIVALENT ANNUAL COST plus a first-failed-marginal stopping rule, and a real
+    # *differential* escalation g (often ~0 in real terms). Changing this economic
+    # model alters council-facing capital advice, so it is a sign-off decision.
+    # See _research/m9-renewal-timing-recommendation-2026-07-01.md.
     k_star = int(np.argmin(tpv_arr))
     return {
         "t_breach": t_b,

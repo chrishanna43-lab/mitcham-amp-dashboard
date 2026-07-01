@@ -32,24 +32,40 @@ CURRENT_YEAR = 2026
 INTERVENTION = 4.0
 
 
-def spend_by_year(conn: duckdb.DuckDBPyConnection, horizon: int) -> dict:
-    """Total optimiser-committed renewal $ per year over the horizon.
+def spend_by_year(conn: duckdb.DuckDBPyConnection, horizon: int, label: str = "stochastic") -> dict:
+    """Actual optimiser-committed renewal $ per year over the horizon.
 
-    Returns ``{"years": [...], "spend": [...]}`` aligned year-by-year, with zeros for
-    years that have no funded renewals. Years outside the horizon are excluded.
+    Returns ``{"years": [...], "spend": [...]}`` aligned year-by-year. [M8] Reads
+    the real per-year capex (``opt_spend``: ``sum_i cost_i * x_{i,t}``, which the
+    annual budget actually bounds), so a renewal funded across several years shows
+    its true per-year commitment rather than a full-cost lump in its modal year.
+    Falls back to the modal-year lump from ``opt_summary`` only if ``opt_spend``
+    is unpopulated (e.g. a DB not yet re-run after this change).
     """
+    years = list(range(CURRENT_YEAR, CURRENT_YEAR + horizon))
+    rows = conn.execute(
+        """
+        SELECT year, spend FROM opt_spend
+        WHERE scenario = ? AND year BETWEEN ? AND ?
+        ORDER BY year
+        """,
+        [label, CURRENT_YEAR, CURRENT_YEAR + horizon - 1],
+    ).fetchall()
+    if rows:
+        spend_map = {int(y): float(s) for y, s in rows}
+        return {"years": years, "spend": [spend_map.get(y, 0.0) for y in years]}
+    # Fallback: modal-year lump (pre-M8 DBs without an opt_spend series).
     rows = conn.execute(
         """
         SELECT renew_year_p50 AS year, SUM(mean_cost) AS spend
         FROM opt_summary
-        WHERE scenario = 'stochastic' AND renew_year_p50 IS NOT NULL
+        WHERE scenario = ? AND renew_year_p50 IS NOT NULL
           AND renew_year_p50 BETWEEN ? AND ?
         GROUP BY renew_year_p50
         ORDER BY renew_year_p50
         """,
-        [CURRENT_YEAR, CURRENT_YEAR + horizon - 1],
+        [label, CURRENT_YEAR, CURRENT_YEAR + horizon - 1],
     ).fetchall()
-    years = list(range(CURRENT_YEAR, CURRENT_YEAR + horizon))
     spend_map = {int(y): float(s) for y, s in rows}
     return {"years": years, "spend": [spend_map.get(y, 0.0) for y in years]}
 
@@ -278,29 +294,36 @@ def deferral_impact(
 
         original_year = int(card["renew_year"])
         c0 = float(card["mean_cost"] or card["value"] or 0.0)
-        criticality = float(card["criticality"] or 0.5)
-
-        years_to_funded = max(0, original_year - CURRENT_YEAR)
-        pv_funded = c0 / (1.0 + r) ** years_to_funded if c0 else 0.0
 
         timing = card["timing"]
-        if timing and timing.get("t_breach") is not None:
+        tpv = timing.get("tpv") if timing else None
+        if timing and timing.get("t_breach") is not None and tpv:
             t_breach = int(timing["t_breach"])
+            max_k = len(tpv) - 1
+            # [M6] Price BOTH legs on the SAME present-value curve, anchored to the
+            # optimiser's funded year (expressed as years-after-breach) — not one
+            # leg from the funded year and the other from the mean-path breach.
+            k_funded = max(0, min(max_k, original_year - (CURRENT_YEAR + t_breach)))
+            pv_funded = float(tpv[k_funded])
+            # [M5/M7] Override = defer to the horizon end, read straight from the
+            # timing model's TPV curve (which carries over range(k), exclusive of
+            # the renewal year — so no double-counted final year). The worst-case
+            # (kick-to-horizon) framing is deliberate; it reuses optimal_timing so
+            # the deferral panel and the building-card timing curve never disagree.
+            pv_override = float(tpv[max_k])
+            years_degraded_extra = max(0, max_k - k_funded)
+        elif timing and timing.get("t_breach") is None:
+            # [M6] Funded pre-emptively (never reaches intervention in-horizon):
+            # deferring still incurs a discounted renewal at the horizon end, not
+            # zero — so we never report a spurious "free" deferral of a building
+            # the optimiser deliberately chose to fund.
             t_end = horizon - 1
-            carry_per_yr = carry_rate * criticality * c0
-            pv_carry = sum(
-                carry_per_yr / (1.0 + r) ** tau
-                for tau in range(t_breach, t_end + 1)
-            )
-            years_past_breach = max(0, t_end - t_breach)
-            pv_renew_end = (
-                c0 * (1.0 + g) ** years_past_breach / (1.0 + r) ** t_end
-                if c0 else 0.0
-            )
-            pv_override = pv_carry + pv_renew_end
-            years_degraded_extra = years_past_breach + 1
+            yf = max(0, original_year - CURRENT_YEAR)
+            pv_funded = c0 / (1.0 + r) ** yf if c0 else 0.0
+            pv_override = c0 / (1.0 + r) ** t_end if c0 else 0.0
+            years_degraded_extra = max(0, t_end - yf)
         else:
-            pv_override = 0.0
+            pv_funded = pv_override = 0.0
             years_degraded_extra = 0
 
         impacts.append({
@@ -392,6 +415,7 @@ def force_into_programme(
     annual_budget: float,
     n_scenarios: int = 40,
     lam: float = 1.0,
+    seed: int = 20260527,
 ) -> dict:
     """Re-solve the optimiser with ``force_bids`` constrained to renew.
 
@@ -449,7 +473,8 @@ def force_into_programme(
         annual_budget=annual_budget,
         n_scenarios=n_scenarios,
         lam=lam,
-        must_renew=force_bids,
+        seed=seed,  # [H5] match the canonical solve's seed so the diff isolates
+        must_renew=force_bids,  # the forced bids, not scenario-sampling churn
         persist=False,
         robust_pass=False,
     )

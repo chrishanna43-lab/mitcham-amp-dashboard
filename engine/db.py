@@ -109,6 +109,17 @@ TABLES_DDL: dict[str, str] = {
             PRIMARY KEY (asset_id, scenario)
         )
     """,
+    # [M8] Actual capex per year (sum_i cost_i * x_{i,t}) — the spread the per-year
+    # budget bounds — so the spend-vs-budget chart reflects real commitment, not a
+    # full-cost lump in each unit's modal year. Keyed by the solve label.
+    "opt_spend": """
+        CREATE TABLE IF NOT EXISTS opt_spend (
+            scenario VARCHAR,
+            year INTEGER,
+            spend DOUBLE,
+            PRIMARY KEY (scenario, year)
+        )
+    """,
 }
 
 

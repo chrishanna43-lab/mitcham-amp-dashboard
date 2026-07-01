@@ -9,6 +9,8 @@ write path vectorised.
 """
 from __future__ import annotations
 
+import hashlib
+
 import duckdb
 import numpy as np
 import pandas as pd
@@ -37,6 +39,22 @@ _PATH_COLUMNS = [
     "renew_need",
     "cost_if_renewed",
 ]
+
+
+def _asset_rng(seed: int, realisation: int, asset_id: str) -> np.random.Generator:
+    """A per-(seed, realisation, asset) RNG, independent of register composition.
+
+    [H7] The simulation previously drew from a single global RNG consumed in
+    asset-scan order, so inserting a What-If proposal row shifted every later
+    asset's draws and changed the canonical assets' sampled breach years —
+    contaminating the before/after diff. Seeding each asset's stream from a hash
+    of its id makes a canonical asset sample identically with or without a
+    proposal present, so a displacement is a genuine re-prioritisation.
+    """
+    digest = hashlib.blake2b(
+        f"{seed}:{realisation}:{asset_id}".encode(), digest_size=8
+    ).digest()
+    return np.random.default_rng(int.from_bytes(digest, "little"))
 
 
 def _fetch_assets(conn: duckdb.DuckDBPyConnection) -> list[dict]:
@@ -132,8 +150,6 @@ def run_monte_carlo(
     Returns the total number of ``mc_paths`` rows written, which equals
     ``n_realisations * n_assets * len(scenarios) * horizon``.
     """
-    rng = np.random.default_rng(seed)
-
     assets = _fetch_assets(conn)
     asset_ids = [a["asset_id"] for a in assets]
     priors = _fetch_priors(conn)
@@ -164,17 +180,19 @@ def run_monte_carlo(
         costs: list[float] = []
 
         for i, asset in enumerate(assets):
+            asset_id = asset["asset_id"]
+            # [H7] Per-asset RNG so draws are independent of register composition.
+            arng = _asset_rng(seed, r, asset_id)
             # Replacement cost is the asset's gross replacement cost (anchored to
             # the published portfolio total), varied by the component cost CV.
             # The prior unit_rate feeds the deterioration model, not the costing.
             prior = priors.get(asset["component"], {})
             cv = prior.get("unit_rate_cv", 0.2)
             grc = float(asset["grc"]) if asset["grc"] is not None else 0.0
-            cost = sample_cost(grc, cv, 1.0, rng)
+            cost = sample_cost(grc, cv, 1.0, arng)
 
             initial_condition = float(asset["condition"])
             useful_life = float(asset["useful_life_years"])
-            asset_id = asset["asset_id"]
 
             for si, scenario in enumerate(scenarios):
                 traj = sample_trajectory(
@@ -184,7 +202,7 @@ def run_monte_carlo(
                     horizon,
                     exposure[si, i],
                     comp_factors[i],
-                    rng,
+                    arng,
                 )
                 for t in range(horizon):
                     cond = float(traj[t])
